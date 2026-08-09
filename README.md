@@ -25,6 +25,64 @@ In the output, you'll find options to open the app in a
 
 You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
 
+## Authentication setup
+
+Popcorn Pact offers **Sign in with Apple** as the primary option and email/password as
+the fallback. The email flow works with no extra configuration. The Apple flow is fully
+implemented in the app but **cannot complete a sign-in until the external configuration
+below is done** — the button will render and open the Apple sheet, then fail at the token
+exchange.
+
+### ⚠️ Placeholder bundle identifier
+
+`app.json` currently sets:
+
+```json
+"ios": { "bundleIdentifier": "com.popcornpact.app" }
+```
+
+This is a **placeholder**. It must match the App ID registered in the Apple Developer
+portal, and the same string must be listed in Supabase. Change it in all three places
+together before the first EAS build.
+
+### 1. Apple Developer portal
+
+Requires enrolment in the Apple Developer Program ($99/year).
+
+1. **Certificates, Identifiers & Profiles → Identifiers → +** — register an App ID using
+   your real bundle identifier.
+2. Enable the **Sign in with Apple** capability on that App ID.
+3. Leave the server-to-server notification endpoint blank; Supabase does not use it.
+
+Native-only sign-in needs **no Services ID and no signing key**. Those are only required
+if a browser-based Apple flow is added later (for example, on web).
+
+### 2. Supabase dashboard
+
+1. **Authentication → Providers → Apple** — enable the provider.
+2. **Client IDs** — add your bundle identifier. To test in Expo Go, also add
+   `host.exp.Exponent`, because Expo Go issues tokens under its own bundle identifier.
+3. Leave the OAuth **Secret Key** blank. No redirect URL is needed: the app authenticates
+   with a native identity token and never opens a browser.
+
+### 3. Database
+
+The `profiles` migration in `supabase/migrations/` must be applied, or every signed-in
+user will land on the profile-load error screen.
+
+```bash
+npx supabase db reset   # local (requires Docker)
+npx supabase db push    # hosted project
+```
+
+### Testing notes
+
+- Apple sign-in is **iOS-only**. Android and web show the email form as the only option.
+- Expo Go supports the module on iOS, but issues different identifiers than a standalone
+  build — hence the `host.exp.Exponent` entry above.
+- Use a real device signed into iCloud where possible; the simulator does not behave
+  identically.
+
 ## Get a fresh project
 
 When you're ready, run:
