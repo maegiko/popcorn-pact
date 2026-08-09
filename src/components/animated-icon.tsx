@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import * as SplashScreen from 'expo-splash-screen';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Dimensions, StyleSheet, View } from 'react-native';
 import Animated, { Easing, Keyframe } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
@@ -8,9 +8,21 @@ import { scheduleOnRN } from 'react-native-worklets';
 const INITIAL_SCALE_FACTOR = Dimensions.get('screen').height / 90;
 const DURATION = 600;
 
-export function AnimatedSplashOverlay() {
+/**
+ * @param ready Hold the splash until auth state resolves. Without this the
+ * overlay dismisses as soon as it paints, and the profile fetch shows through
+ * as a blank frame before the first real screen mounts.
+ */
+export function AnimatedSplashOverlay({ ready = true }: { ready?: boolean }) {
   const [animate, setAnimate] = useState(false);
   const [visible, setVisible] = useState(true);
+  const [laidOut, setLaidOut] = useState(false);
+
+  // Laid out first so the overlay is painted before the native splash goes.
+  useEffect(() => {
+    if (!laidOut || !ready || animate) return;
+    SplashScreen.hideAsync().finally(() => setAnimate(true));
+  }, [laidOut, ready, animate]);
 
   if (!visible) return null;
 
@@ -47,13 +59,7 @@ export function AnimatedSplashOverlay() {
       {image}
     </Animated.View>
   ) : (
-    <View
-      onLayout={() => {
-        SplashScreen.hideAsync().finally(() => {
-          setAnimate(true);
-        });
-      }}
-      style={styles.splashOverlay}>
+    <View onLayout={() => setLaidOut(true)} style={styles.splashOverlay}>
       {image}
     </View>
   );
