@@ -12,7 +12,7 @@ type SignUpResult = {
 type AuthContextValue = {
   session: Session | null;
   isLoading: boolean;
-  signUp: (email: string, password: string) => Promise<SignUpResult>;
+  signUp: (email: string, password: string, displayName: string) => Promise<SignUpResult>;
   signIn: (email: string, password: string) => Promise<{ error: AuthError | null }>;
   signOut: () => Promise<{ error: AuthError | null }>;
 };
@@ -49,8 +49,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       session,
       isLoading,
-      signUp: async (email, password) => {
-        const { data, error } = await supabase.auth.signUp({ email, password });
+      signUp: async (email, password, displayName) => {
+        // display_name lands in auth.users.raw_user_meta_data, which the
+        // on_auth_user_created trigger reads to seed profiles.display_name.
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: { data: { display_name: displayName } },
+        });
         return {
           error,
           needsEmailConfirmation: !error && !data.session,
