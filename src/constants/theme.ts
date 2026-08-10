@@ -66,3 +66,6 @@ export const MaxContentWidth = 800;
 
 /** Mirrors the profiles_display_name_valid check constraint. */
 export const DisplayNameMaxLength = 50;
+
+/** Mirrors the group_invites_code_valid check constraint. */
+export const InviteCodeLength = 8;
