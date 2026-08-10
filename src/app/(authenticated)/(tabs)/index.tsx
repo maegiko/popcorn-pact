@@ -1,16 +1,82 @@
+import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { Pressable, StyleSheet } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { GroupRequired } from '@/components/group-required';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useSession } from '@/lib/auth';
+import { useGroups } from '@/lib/group';
 
+/**
+ * The shared watching surface. The swipe deck lands inside <GroupRequired /> in
+ * Phase 4.
+ *
+ * Sign out sits deliberately *outside* the gate: account-level actions must work
+ * for someone who is not in a group. It lives here only until there is a
+ * settings tab to own it, along with subscription, billing and notifications.
+ */
 export default function HomeScreen() {
+  return (
+    <ThemedView style={styles.container}>
+      <View style={styles.gated}>
+        <GroupRequired>
+          <PairedHome />
+        </GroupRequired>
+      </View>
+
+      <AccountActions />
+    </ThemedView>
+  );
+}
+
+function PairedHome() {
   const theme = useTheme();
-  const { session, signOut } = useSession();
+  const router = useRouter();
+  const { currentGroup, partner } = useGroups();
+
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <ThemedText type="subtitle">
+        {partner ? `You and ${partner.displayName ?? 'your partner'}` : 'Waiting for them'}
+      </ThemedText>
+
+      <ThemedText type="small" themeColor="textSecondary">
+        {partner
+          ? 'Your shared pile lands here next.'
+          : 'Share your code and you can start swiping together.'}
+      </ThemedText>
+
+      {/*
+        Unconditional on purpose. /pair owns leaving the group, so hiding this
+        once a partner joins would strand the only exit and make pairing with
+        the wrong person unrecoverable.
+      */}
+      <Pressable
+        onPress={() => router.push('/pair')}
+        style={[styles.button, { backgroundColor: theme.backgroundSelected }]}>
+        <ThemedText type="smallBold">{partner ? 'Group settings' : 'Show invite code'}</ThemedText>
+      </Pressable>
+
+      {currentGroup && (
+        <ThemedView type="backgroundElement" style={styles.card}>
+          <ThemedText type="small" themeColor="textSecondary">
+            Members
+          </ThemedText>
+          <ThemedText type="default">
+            {currentGroup.memberCount} of {currentGroup.memberLimit}
+          </ThemedText>
+        </ThemedView>
+      )}
+    </SafeAreaView>
+  );
+}
+
+function AccountActions() {
+  const { signOut } = useSession();
   const [busy, setBusy] = useState(false);
 
   async function handleSignOut() {
@@ -20,38 +86,21 @@ export default function HomeScreen() {
   }
 
   return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedText type="subtitle">Signed in</ThemedText>
-
-        <ThemedView type="backgroundElement" style={styles.card}>
-          <ThemedText type="small" themeColor="textSecondary">
-            Email
-          </ThemedText>
-          <ThemedText type="code">{session?.user.email ?? '—'}</ThemedText>
-
-          <ThemedText type="small" themeColor="textSecondary">
-            User ID
-          </ThemedText>
-          <ThemedText type="code">{session?.user.id ?? '—'}</ThemedText>
-        </ThemedView>
-
-        <Pressable
-          onPress={handleSignOut}
-          disabled={busy}
-          style={[
-            styles.button,
-            { backgroundColor: theme.backgroundSelected, opacity: busy ? 0.5 : 1 },
-          ]}>
-          <ThemedText type="smallBold">Sign out</ThemedText>
-        </Pressable>
-      </SafeAreaView>
-    </ThemedView>
+    <SafeAreaView edges={['bottom']} style={styles.account}>
+      <Pressable onPress={handleSignOut} disabled={busy} style={styles.switchButton}>
+        <ThemedText type="small" themeColor="textSecondary">
+          {busy ? 'Signing out…' : 'Sign out'}
+        </ThemedText>
+      </Pressable>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
+    flex: 1,
+  },
+  gated: {
     flex: 1,
   },
   safeArea: {
@@ -61,7 +110,6 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: MaxContentWidth,
     paddingHorizontal: Spacing.four,
-    paddingBottom: BottomTabInset + Spacing.three,
     gap: Spacing.three,
   },
   card: {
@@ -72,6 +120,13 @@ const styles = StyleSheet.create({
   button: {
     borderRadius: Spacing.two,
     paddingVertical: Spacing.three,
+    alignItems: 'center',
+  },
+  account: {
+    paddingBottom: BottomTabInset + Spacing.three,
+    alignItems: 'center',
+  },
+  switchButton: {
     alignItems: 'center',
   },
 });
