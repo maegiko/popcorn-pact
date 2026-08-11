@@ -60,14 +60,38 @@ jobs:
       - name: Let containers reach the runner's loopback
         run: |
           set -euo pipefail
+
           NETWORK=$(docker network ls --filter name=supabase_network --format '{{.Name}}' | head -1)
           GATEWAY=$(docker network inspect "$NETWORK" -f '{{ (index .IPAM.Config 0).Gateway }}')
           SUBNET=$(docker network inspect "$NETWORK" -f '{{ (index .IPAM.Config 0).Subnet }}')
+
+          # Traffic arrives on the Supabase bridge, because that is the network
+          # the edge runtime is attached to.
           IFACE=$(ip -o -4 addr show | awk -v gw="$GATEWAY/" 'index($4, gw) == 1 { print $2; exit }')
-          echo "network=$NETWORK gateway=$GATEWAY subnet=$SUBNET iface=$IFACE"
+
+          # But it is addressed to whatever `host-gateway` resolves to, which is
+          # the DEFAULT bridge's gateway (172.17.0.1) and not this network's.
+          # Asked rather than assumed: getting this wrong is silent, because the
+          # packets still reach the host and are merely refused.
+          # ahostsv4, because these are iptables rules and `getent hosts` can put
+          # an IPv6 address on the first line.
+          HOST_GATEWAY=$(docker run --rm --add-host host.docker.internal:host-gateway \
+            alpine:3 getent ahostsv4 host.docker.internal | awk 'NR == 1 { print $1 }')
+
+          echo "network=$NETWORK subnet=$SUBNET iface=$IFACE host-gateway=$HOST_GATEWAY"
+          test -n "$IFACE" && test -n "$HOST_GATEWAY"
+
+          # Routing to 127.0.0.0/8 from another interface is refused unless this
+          # is on, which is why the DNAT below is not sufficient by itself.
           sudo sysctl -w net.ipv4.conf.all.route_localnet=1
-          sudo iptables -t nat -I PREROUTING -i "$IFACE" -p tcp -d "$GATEWAY" -j DNAT --to-destination 127.0.0.1
+          sudo sysctl -w "net.ipv4.conf.$IFACE.route_localnet=1"
+
+          sudo iptables -t nat -I PREROUTING -i "$IFACE" -p tcp -d "$HOST_GATEWAY" -j DNAT --to-destination 127.0.0.1
+          # Replies must leave as loopback traffic, or the socket bound to
+          # 127.0.0.1 never sees them.
           sudo iptables -t nat -I POSTROUTING -o lo -s "$SUBNET" -j MASQUERADE
+
+          sudo iptables -t nat -L PREROUTING -n -v | head -5
 
       # Fails loudly and by name if the rule above did not take, rather than
       # letting it surface later as a wall of confusing upstream_unavailable
@@ -79,9 +103,21 @@ jobs:
           PROBE_PID=$!
           sleep 1
           NETWORK=$(docker network ls --filter name=supabase_network --format '{{.Name}}' | head -1)
-          docker run --rm --network "$NETWORK" --add-host host.docker.internal:host-gateway \
-            alpine:3 wget -q -O- --timeout=5 http://host.docker.internal:45999/
-          kill $PROBE_PID
+
+          if docker run --rm --network "$NETWORK" --add-host host.docker.internal:host-gateway \
+               alpine:3 wget -q -O- --timeout=5 http://host.docker.internal:45999/; then
+            kill $PROBE_PID
+          else
+            # Packet counters say whether the DNAT rule matched at all, which is
+            # the difference between "wrong address" and "rule fired but the
+            # reply never came back".
+            echo "--- probe failed: nat rules and counters ---"
+            sudo iptables -t nat -L PREROUTING -n -v --line-numbers
+            sudo iptables -t nat -L POSTROUTING -n -v --line-numbers
+            sudo sysctl net.ipv4.conf.all.route_localnet
+            kill $PROBE_PID
+            exit 1
+          fi
 
       - name: Run Edge Function tests
         run: npm run test:edge
