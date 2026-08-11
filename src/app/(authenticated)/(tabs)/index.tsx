@@ -10,6 +10,7 @@ import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useSession } from '@/lib/auth';
 import { useGroups } from '@/lib/group';
+import { useGeneratePool, type GeneratePoolState } from '@/lib/pool';
 
 /**
  * The shared watching surface. The swipe deck lands inside <GroupRequired /> in
@@ -46,9 +47,11 @@ function PairedHome() {
 
       <ThemedText type="small" themeColor="textSecondary">
         {partner
-          ? 'Your shared pile lands here next.'
-          : 'Share your code and you can start swiping together.'}
+          ? 'Find something to watch together.'
+          : 'Share your code, or start a pool while you wait.'}
       </ThemedText>
+
+      {currentGroup && <PoolSection groupId={currentGroup.id} />}
 
       {/*
         Unconditional on purpose. /pair owns leaving the group, so hiding this
@@ -72,6 +75,96 @@ function PairedHome() {
         </ThemedView>
       )}
     </SafeAreaView>
+  );
+}
+
+/**
+ * generate-pool's status vocabulary, worded for the person tapping the button.
+ * 'idle'/'generating'/'created' have no message of their own here -- idle and
+ * generating are silent, and 'created' gets its own success view instead.
+ */
+function poolMessage(state: GeneratePoolState): string | null {
+  switch (state) {
+    case 'idle':
+    case 'generating':
+    case 'created':
+      return null;
+    case 'not_a_member':
+      return "You're no longer in this group.";
+    case 'group_in_grace':
+      return 'This group is paused until its owner upgrades.';
+    case 'no_candidates':
+      return "We couldn't find anything to show right now. Try again in a bit.";
+    case 'upstream_unavailable':
+      return "We couldn't reach the movie database. Try again.";
+    case 'error':
+      return 'Something went wrong. Try again.';
+  }
+}
+
+/**
+ * Quick Start requests a generated pool immediately; Fine Tune is a named entry
+ * point for filters the product does not have yet (runtime, genre, mood), so it
+ * surfaces a "coming soon" message rather than inventing settings.
+ *
+ * `useGeneratePool` is keyed on `groupId`, so if the group changes underneath
+ * this screen (leaving, switching), any in-flight request for the old group is
+ * dropped rather than landing here.
+ */
+function PoolSection({ groupId }: { groupId: string }) {
+  const theme = useTheme();
+  const { state, generate, reset } = useGeneratePool(groupId);
+  const [fineTuneMessage, setFineTuneMessage] = useState<string | null>(null);
+  const busy = state === 'generating';
+
+  if (state === 'created') {
+    return (
+      <ThemedView type="backgroundElement" style={styles.poolCard}>
+        <ThemedText type="smallBold">Your pool is ready</ThemedText>
+        <ThemedText type="small" themeColor="textSecondary" style={styles.message}>
+          Swiping starts here soon. This pool is saved and waiting.
+        </ThemedText>
+        <Pressable onPress={reset} style={styles.switchButton}>
+          <ThemedText type="small" themeColor="textSecondary">
+            Make a new pool
+          </ThemedText>
+        </Pressable>
+      </ThemedView>
+    );
+  }
+
+  const message = poolMessage(state) ?? fineTuneMessage;
+
+  return (
+    <ThemedView type="backgroundElement" style={styles.poolCard}>
+      <Pressable
+        onPress={() => {
+          setFineTuneMessage(null);
+          generate();
+        }}
+        disabled={busy}
+        style={[
+          styles.button,
+          { backgroundColor: theme.backgroundSelected, opacity: busy ? 0.5 : 1 },
+        ]}>
+        <ThemedText type="smallBold">{busy ? 'Finding titles…' : 'Quick Start'}</ThemedText>
+      </Pressable>
+
+      <Pressable
+        onPress={() => setFineTuneMessage('Fine-tuning options are coming soon.')}
+        disabled={busy}
+        style={styles.switchButton}>
+        <ThemedText type="small" themeColor="textSecondary">
+          Fine Tune
+        </ThemedText>
+      </Pressable>
+
+      {message && (
+        <ThemedText type="small" themeColor="textSecondary" style={styles.message}>
+          {message}
+        </ThemedText>
+      )}
+    </ThemedView>
   );
 }
 
@@ -117,6 +210,11 @@ const styles = StyleSheet.create({
     padding: Spacing.three,
     gap: Spacing.one,
   },
+  poolCard: {
+    borderRadius: Spacing.three,
+    padding: Spacing.three,
+    gap: Spacing.two,
+  },
   button: {
     borderRadius: Spacing.two,
     paddingVertical: Spacing.three,
@@ -128,5 +226,8 @@ const styles = StyleSheet.create({
   },
   switchButton: {
     alignItems: 'center',
+  },
+  message: {
+    textAlign: 'center',
   },
 });
