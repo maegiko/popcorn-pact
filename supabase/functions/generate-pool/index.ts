@@ -92,10 +92,22 @@ class UpstreamError extends Error {}
 // Request and response plumbing.
 // ---------------------------------------------------------------------------
 
+// The web client is a browser, so a cross-origin POST carrying `authorization`
+// and a JSON body triggers a CORS preflight -- native iOS/Android fetch never
+// does this, which is why the gap was invisible until the web target called
+// the deployed function. No cookies/credentials are involved (auth travels as
+// a bearer token), so a wildcard origin carries no session-fixation risk.
+const CORS_HEADERS: HeadersInit = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'POST, OPTIONS',
+  'access-control-allow-headers':
+    'authorization, apikey, content-type, x-client-info, x-popcornpact-test-tmdb-base-url',
+};
+
 function respond(status: GenerateStatus, poolId: string | null, httpStatus = 200): Response {
   return new Response(JSON.stringify({ status, poolId }), {
     status: httpStatus,
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...CORS_HEADERS },
   });
 }
 
@@ -410,6 +422,9 @@ function selectTitles(candidates: RawCandidate[], providerIds: number[] | null):
 // ---------------------------------------------------------------------------
 
 Deno.serve(async (request: Request): Promise<Response> => {
+  // The preflight itself carries no auth and expects no body -- answered
+  // before anything else here even looks at the request.
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
   if (request.method !== 'POST') return respond('invalid_request', null, 405);
 
   try {
