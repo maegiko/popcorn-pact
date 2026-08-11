@@ -53,7 +53,8 @@
     "test": "jest --verbose",
     "test:unit": "jest tests/unit --verbose",
     "test:component": "jest tests/component --verbose",
-    "test:database": "HOME=/tmp npx supabase test db tests/database"
+    "test:database": "HOME=/tmp npx supabase test db tests/database",
+    "test:edge": "npx supabase db reset --local && docker restart $(docker ps -qf name=supabase_edge_runtime) > /dev/null && sleep 5 && eval \"$(npx supabase status -o env | grep -E '^[A-Z_]+=')\" && SUPABASE_TEST_ANON_KEY=\"$ANON_KEY\" SUPABASE_TEST_SERVICE_ROLE_KEY=\"$SERVICE_ROLE_KEY\" jest --config jest.edge.config.js --runInBand --verbose"
   },
   "private": true,
   "jest": {
@@ -61,6 +62,10 @@
     "testMatch": [
       "<rootDir>/tests/**/*.test.ts",
       "<rootDir>/tests/**/*.test.tsx"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "<rootDir>/tests/edge/"
     ],
     "setupFilesAfterEnv": [
       "<rootDir>/tests/jest.setup.ts"
