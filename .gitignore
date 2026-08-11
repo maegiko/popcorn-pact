@@ -5,7 +5,9 @@ node_modules/
 .expo/
 dist/
 web-build/
-expo-env.d.ts
+# expo-env.d.ts is generated, but deliberately NOT ignored: its reference to
+# expo/types is the only thing that declares CSS module imports to tsc, and CI
+# typechecks without ever running the Expo CLI that would regenerate it.
 
 # Native
 .kotlin/
