@@ -385,6 +385,14 @@ deno_version = 2
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
 
+# Pool generation. verify_jwt is left on: the function identifies the caller from
+# their JWT and takes no user id from the request body, so an unauthenticated
+# request has nothing to act on. TMDB credentials are set as deployed secrets,
+# never in this file.
+[functions.generate-pool]
+enabled = true
+verify_jwt = true
+
 [analytics]
 enabled = true
 port = 54327
