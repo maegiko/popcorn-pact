@@ -145,6 +145,15 @@ jest.mock('@/lib/group', () => ({
   useGroups: () => mockGroupValue,
 }));
 
+jest.mock('@/lib/pool', () => ({
+  useGeneratePool: () => ({
+    state: 'idle',
+    poolId: null,
+    generate: jest.fn(),
+    reset: jest.fn(),
+  }),
+}));
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockAuthValue = {
