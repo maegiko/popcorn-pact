@@ -53,7 +53,7 @@
     "test": "jest",
     "test:unit": "jest tests/unit",
     "test:component": "jest tests/component",
-    "test:database": "jest tests/database"
+    "test:database": "HOME=/tmp npx supabase test db tests/database"
   },
   "private": true,
   "jest": {
