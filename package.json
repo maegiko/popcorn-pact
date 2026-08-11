@@ -50,9 +50,9 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test": "jest",
-    "test:unit": "jest tests/unit",
-    "test:component": "jest tests/component",
+    "test": "jest --verbose",
+    "test:unit": "jest tests/unit --verbose",
+    "test:component": "jest tests/component --verbose",
     "test:database": "HOME=/tmp npx supabase test db tests/database"
   },
   "private": true,
@@ -66,6 +66,7 @@
       "<rootDir>/tests/jest.setup.ts"
     ],
     "moduleNameMapper": {
+      "\\.css$": "<rootDir>/tests/style-mock.js",
       "^@/(.*)$": "<rootDir>/src/$1"
     }
   }
