@@ -1,0 +1,2 @@
+-- Intentionally empty. Local and CI database resets load this file because
+-- supabase/config.toml has db.seed enabled.
