@@ -1,5 +1,6 @@
 import { render } from '@testing-library/react-native';
 import type { ReactNode } from 'react';
+import { Text } from 'react-native';
 
 import TabsLayout from '@/app/(authenticated)/(tabs)/_layout';
 import HomeScreen from '@/app/(authenticated)/(tabs)/index';
@@ -27,85 +28,120 @@ let mockAuthValue: MockAuthValue;
 let mockGroupValue: MockGroupValue;
 const mockRouterPush = jest.fn();
 
+function MockStackBase({ children }: { children: ReactNode }) {
+  return <>{children}</>;
+}
+
+function MockStackProtected({ guard, children }: { guard: boolean; children: ReactNode }) {
+  return guard ? <>{children}</> : null;
+}
+
+function MockStackScreen({ name }: { name: string; options?: object }) {
+  return <Text>{`stack:${name}`}</Text>;
+}
+
+function MockLink({ children }: { children: ReactNode }) {
+  return <>{children}</>;
+}
+
+function MockThemeProvider({ children }: { children: ReactNode }) {
+  return <>{children}</>;
+}
+
+function MockNativeTabsTriggerBase({ name, children }: { name: string; children: ReactNode }) {
+  return (
+    <>
+      <Text>{`tab:${name}`}</Text>
+      {children}
+    </>
+  );
+}
+
+function MockNativeTabsTriggerLabel({ children }: { children: ReactNode }) {
+  return <Text>{children}</Text>;
+}
+
+function MockNativeTabsTriggerIcon() {
+  return null;
+}
+
+function MockNativeTabsBase({ children }: { children: ReactNode }) {
+  return <>{children}</>;
+}
+
+function MockSafeAreaView({ children }: { children: ReactNode }) {
+  return <>{children}</>;
+}
+
+function MockAnimatedSplashOverlay() {
+  return null;
+}
+
+function MockAuthLoading() {
+  return null;
+}
+
+function MockProfileLoadError() {
+  return null;
+}
+
+function MockAuthProvider({ children }: { children: ReactNode }) {
+  return <>{children}</>;
+}
+
+function MockGroupProvider({ children }: { children: ReactNode }) {
+  return <>{children}</>;
+}
+
 jest.mock('expo-splash-screen', () => ({
   preventAutoHideAsync: jest.fn(),
 }));
 
-jest.mock('expo-router', () => {
-  const React = require('react');
-  const { Text } = require('react-native');
+jest.mock('expo-router', () => ({
+  DarkTheme: {},
+  DefaultTheme: {},
+  Link: MockLink,
+  Stack: Object.assign(MockStackBase, {
+    Protected: MockStackProtected,
+    Screen: MockStackScreen,
+  }),
+  ThemeProvider: MockThemeProvider,
+  useRouter: () => ({ push: mockRouterPush }),
+}));
 
-  function Stack({ children }: { children: ReactNode }) {
-    return <>{children}</>;
-  }
-
-  Stack.Protected = ({ guard, children }: { guard: boolean; children: ReactNode }) =>
-    guard ? <>{children}</> : null;
-  Stack.Screen = ({ name }: { name: string; options?: object }) => (
-    <Text>{`stack:${name}`}</Text>
-  );
-
-  return {
-    DarkTheme: {},
-    DefaultTheme: {},
-    Link: ({ children }: { children: ReactNode }) => <>{children}</>,
-    Stack,
-    ThemeProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
-    useRouter: () => ({ push: mockRouterPush }),
-  };
-});
-
-jest.mock('expo-router/unstable-native-tabs', () => {
-  const React = require('react');
-  const { Text } = require('react-native');
-
-  const Trigger = Object.assign(
-    ({ name, children }: { name: string; children: ReactNode }) => (
-      <>
-        <Text>{`tab:${name}`}</Text>
-        {children}
-      </>
-    ),
-    {
-      Label: ({ children }: { children: ReactNode }) => <Text>{children}</Text>,
-      Icon: () => null,
-    }
-  );
-
-  const NativeTabs = Object.assign(
-    ({ children }: { children: ReactNode }) => {
-      return <>{children}</>;
-    },
-    { Trigger }
-  );
-
-  return { NativeTabs };
-});
+jest.mock('expo-router/unstable-native-tabs', () => ({
+  NativeTabs: Object.assign(MockNativeTabsBase, {
+    Trigger: Object.assign(MockNativeTabsTriggerBase, {
+      Label: MockNativeTabsTriggerLabel,
+      Icon: MockNativeTabsTriggerIcon,
+    }),
+  }),
+}));
 
 jest.mock('react-native-safe-area-context', () => ({
-  SafeAreaView: ({ children }: { children: ReactNode }) => <>{children}</>,
+  SafeAreaView: MockSafeAreaView,
   useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
 }));
 
 jest.mock('@/components/animated-icon', () => ({
-  AnimatedSplashOverlay: () => null,
+  AnimatedSplashOverlay: MockAnimatedSplashOverlay,
 }));
 
 jest.mock('@/components/auth-loading', () => ({
-  AuthLoading: () => null,
+  AuthLoading: MockAuthLoading,
 }));
 
 jest.mock('@/components/profile-load-error', () => ({
-  ProfileLoadError: () => null,
+  ProfileLoadError: MockProfileLoadError,
 }));
 
 jest.mock('@/lib/auth', () => ({
-  AuthProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+  AuthProvider: MockAuthProvider,
   useSession: () => mockAuthValue,
 }));
 
 jest.mock('@/lib/group', () => ({
-  GroupProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+  GroupProvider: MockGroupProvider,
   useGroups: () => mockGroupValue,
 }));
 
