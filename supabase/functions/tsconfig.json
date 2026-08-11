@@ -1,0 +1,23 @@
+{
+  // Edge Functions are a separate program from the Expo app: Deno globals, web
+  // APIs, and none of the React Native or Jest types. The root tsconfig excludes
+  // this directory for exactly that reason, which also left these files with no
+  // project at all -- so the editor fell back to an inferred one and reported
+  // `Deno` as undefined. This is the project they belong to, and it is what
+  // `npm run typecheck:functions` compiles.
+  "compilerOptions": {
+    "strict": true,
+    "target": "esnext",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    // dom supplies fetch, Request/Response, Headers, URL and AbortSignal, which
+    // Deno implements natively; deno.d.ts supplies the rest.
+    "lib": ["esnext", "dom"],
+    // Deliberately empty: without it the app's @types/jest leaks in here.
+    "types": [],
+    "noEmit": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["**/*.ts"]
+}

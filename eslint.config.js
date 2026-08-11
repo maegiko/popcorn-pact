@@ -5,7 +5,10 @@ const expoConfig = require('eslint-config-expo/flat');
 module.exports = defineConfig([
   expoConfig,
   {
-    ignores: ['dist/*'],
+    // Edge Functions are Deno, not the Expo app: different globals, different
+    // module resolution. They are typechecked by `deno check`, not by tsc/eslint
+    // here, which is also why tsconfig.json excludes them.
+    ignores: ['dist/*', 'supabase/functions/*'],
   },
   {
     files: ['**/*.{ts,tsx}'],

@@ -50,6 +50,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
+    "typecheck": "tsc --noEmit && npm run typecheck:functions",
+    "typecheck:functions": "tsc -p supabase/functions --noEmit",
     "test": "jest --verbose",
     "test:unit": "jest tests/unit --verbose",
     "test:component": "jest tests/component --verbose",
