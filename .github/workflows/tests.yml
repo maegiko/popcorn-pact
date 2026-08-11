@@ -27,11 +27,61 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Covers the Expo app and, separately, the Deno Edge Functions -- the two
+      # are different programs with different globals and cannot share one pass.
+      - name: Typecheck
+        run: npm run typecheck
+
       - name: Run JavaScript tests
         run: npm test -- --runInBand
 
-      - name: Start local Supabase database
-        run: npx supabase db start
+      # The edge tests need the API gateway, auth, PostgREST and the edge runtime,
+      # not just the database, so this replaces the former `supabase db start`.
+      # Everything the two suites do not touch is excluded to keep the job short.
+      # Entirely local: no hosted project is contacted, and the linked project ref
+      # in supabase/.temp is never used by `start`.
+      - name: Start local Supabase stack
+        run: >
+          npx supabase start
+          -x realtime,storage-api,imgproxy,mailpit,postgres-meta,studio,logflare,vector,supavisor
 
       - name: Run database tests
         run: npm run test:database
+
+      # The edge tests point pool generation at a mock TMDB server, which the test
+      # process binds on the runner's loopback address. Containers reach the runner
+      # through the Supabase bridge gateway, and a socket bound to 127.0.0.1 does
+      # not accept traffic arriving on that interface -- so without this the
+      # function cannot see the mock at all and every generation returns
+      # upstream_unavailable.
+      #
+      # Docker Desktop performs this forwarding itself, which is why local runs
+      # need nothing; plain Linux Docker does not.
+      - name: Let containers reach the runner's loopback
+        run: |
+          set -euo pipefail
+          NETWORK=$(docker network ls --filter name=supabase_network --format '{{.Name}}' | head -1)
+          GATEWAY=$(docker network inspect "$NETWORK" -f '{{ (index .IPAM.Config 0).Gateway }}')
+          SUBNET=$(docker network inspect "$NETWORK" -f '{{ (index .IPAM.Config 0).Subnet }}')
+          IFACE=$(ip -o -4 addr show | awk -v gw="$GATEWAY/" 'index($4, gw) == 1 { print $2; exit }')
+          echo "network=$NETWORK gateway=$GATEWAY subnet=$SUBNET iface=$IFACE"
+          sudo sysctl -w net.ipv4.conf.all.route_localnet=1
+          sudo iptables -t nat -I PREROUTING -i "$IFACE" -p tcp -d "$GATEWAY" -j DNAT --to-destination 127.0.0.1
+          sudo iptables -t nat -I POSTROUTING -o lo -s "$SUBNET" -j MASQUERADE
+
+      # Fails loudly and by name if the rule above did not take, rather than
+      # letting it surface later as a wall of confusing upstream_unavailable
+      # assertions. This probes exactly the path the function uses.
+      - name: Verify containers can reach a loopback-bound server
+        run: |
+          set -euo pipefail
+          node -e "require('node:http').createServer((_, res) => res.end('ok')).listen(45999, '127.0.0.1')" &
+          PROBE_PID=$!
+          sleep 1
+          NETWORK=$(docker network ls --filter name=supabase_network --format '{{.Name}}' | head -1)
+          docker run --rm --network "$NETWORK" --add-host host.docker.internal:host-gateway \
+            alpine:3 wget -q -O- --timeout=5 http://host.docker.internal:45999/
+          kill $PROBE_PID
+
+      - name: Run Edge Function tests
+        run: npm run test:edge
