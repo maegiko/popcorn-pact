@@ -14,6 +14,7 @@ export type GeneratePoolOutcome =
   | 'not_a_member'
   | 'group_in_grace'
   | 'no_candidates'
+  | 'filter_unsupported'
   | 'upstream_unavailable'
   | 'error';
 
@@ -26,6 +27,10 @@ const KNOWN_OUTCOMES = new Set<string>([
   'not_a_member',
   'group_in_grace',
   'no_candidates',
+  // The server cannot narrow by the group's streaming services right now. It
+  // deliberately says nothing about which upstream is configured -- the client
+  // has no business knowing where titles come from.
+  'filter_unsupported',
   'upstream_unavailable',
 ]);
 

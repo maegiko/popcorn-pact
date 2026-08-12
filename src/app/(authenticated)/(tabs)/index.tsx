@@ -95,6 +95,8 @@ function poolMessage(state: GeneratePoolState): string | null {
       return 'This group is paused until its owner upgrades.';
     case 'no_candidates':
       return "We couldn't find anything to show right now. Try again in a bit.";
+    case 'filter_unsupported':
+      return "We can't narrow by your streaming services right now. Try a pool from anywhere.";
     case 'upstream_unavailable':
       return "We couldn't reach the movie database. Try again.";
     case 'error':
