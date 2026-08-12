@@ -387,8 +387,9 @@ deno_version = 2
 
 # Pool generation. verify_jwt is left on: the function identifies the caller from
 # their JWT and takes no user id from the request body, so an unauthenticated
-# request has nothing to act on. TMDB credentials are set as deployed secrets,
-# never in this file.
+# request has nothing to act on. Which media provider the function uses is server
+# configuration (MEDIA_PROVIDER, see functions/_shared/media/registry.ts), and
+# provider credentials are set as deployed secrets, never in this file.
 [functions.generate-pool]
 enabled = true
 verify_jwt = true
@@ -420,3 +421,7 @@ enabled = true
 # declarative_schema_path = "./database"
 # JSON string passed through to pg-delta SQL formatting.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":80,\"commaStyle\":\"trailing\"}"
+
+[edge_runtime.secrets]
+MEDIA_PROVIDER = "env(MEDIA_PROVIDER)"
+TVDB_API_KEY = "env(TVDB_API_KEY)"
