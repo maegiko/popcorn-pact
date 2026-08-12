@@ -46,3 +46,6 @@ yarn-error.*
 CLAUDE.md
 AGENTS.md
 .claude/
+
+# local-only live diagnostics
+tests/manual-live/
