@@ -143,7 +143,11 @@ async function invokeGeneratePool(
       apikey: SUPABASE_ANON_KEY!,
       authorization: `Bearer ${user.token}`,
       'content-type': 'application/json',
-      'x-popcornpact-test-tmdb-base-url': mockServerUrl,
+      // Pinned, not inherited from MEDIA_PROVIDER: this suite routes its mock by
+      // TMDB's discover paths and asserts TMDB's per-endpoint typing, so it has
+      // to run against that adapter whatever the developer's stack is set to.
+      'x-popcornpact-test-media-base-url': mockServerUrl,
+      'x-popcornpact-test-media-provider': 'tmdb',
     },
     body: JSON.stringify(body),
   });
@@ -151,16 +155,31 @@ async function invokeGeneratePool(
   return (await response.json()) as GenerateResponse;
 }
 
+// Pools store canonical media ids, so a pool's titles are read back through the
+// provider identity they were recorded under. See generate-pool.test.ts.
 async function titlesForPool(poolId: string): Promise<{ tmdb_id: number; media_type: string }[]> {
-  const result = await admin
-    .from('pool_titles')
-    .select('tmdb_id, media_type')
-    .eq('pool_id', poolId)
-    .order('tmdb_id')
-    .order('media_type');
+  const titles = await admin.from('pool_titles').select('media_id').eq('pool_id', poolId);
+  if (titles.error) throw titles.error;
 
-  if (result.error) throw result.error;
-  return result.data ?? [];
+  const mediaIds = (titles.data ?? []).map((row) => row.media_id as string);
+  if (mediaIds.length === 0) return [];
+
+  const mapped = await admin
+    .from('media_external_ids')
+    .select('media_id, media_type, external_id')
+    .eq('provider', 'tmdb')
+    .in('media_id', mediaIds);
+  if (mapped.error) throw mapped.error;
+
+  const byMediaId = new Map(mapped.data!.map((row) => [row.media_id as string, row]));
+
+  return mediaIds
+    .map((mediaId) => {
+      const row = byMediaId.get(mediaId);
+      if (!row) throw new Error(`Pool title ${mediaId} carries no tmdb identity.`);
+      return { tmdb_id: Number(row.external_id), media_type: row.media_type as string };
+    })
+    .sort((a, b) => a.tmdb_id - b.tmdb_id || a.media_type.localeCompare(b.media_type));
 }
 
 async function poolCountForGroup(groupId: string): Promise<number> {

@@ -3,6 +3,14 @@ import type { AddressInfo } from 'node:net';
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
+// The generate-pool contract: membership, grace, snapshot semantics, validation,
+// deduplication and service filtering, driven through the TMDB adapter because
+// its mock is the simplest one to state candidates in.
+//
+// This suite runs against TMDB whatever MEDIA_PROVIDER says -- see the pinned
+// header in invokeGeneratePool. Whether those behaviours survive a change of
+// provider is a separate question, asked in generate-pool-providers.test.ts.
+
 type GenerateStatus =
   | 'created'
   | 'not_a_member'
@@ -197,8 +205,18 @@ async function invokeGeneratePool(
       authorization: `Bearer ${user.token}`,
       'content-type': 'application/json',
       // Test harness only: the public contract is the Edge Function endpoint.
-      // This supplies a mocked TMDB boundary without mocking database behavior.
-      'x-popcornpact-test-tmdb-base-url': mockServerUrl,
+      // These supply a mocked upstream boundary without mocking database
+      // behavior.
+      //
+      // The provider is pinned rather than inherited from MEDIA_PROVIDER. The
+      // mock below answers with TMDB-shaped rows, so a developer whose stack is
+      // configured for TVDB would otherwise be running this suite against an
+      // adapter that cannot read them -- and the service-filter cases would
+      // correctly come back filter_unsupported, failing for a reason that has
+      // nothing to do with what they assert. Provider-independent behaviour is
+      // covered by generate-pool-providers.test.ts.
+      'x-popcornpact-test-media-base-url': mockServerUrl,
+      'x-popcornpact-test-media-provider': 'tmdb',
     },
     body: JSON.stringify(body),
   });
@@ -212,16 +230,41 @@ async function poolCountForGroup(groupId: string): Promise<number> {
   return result.count ?? 0;
 }
 
-async function titlesForPool(poolId: string): Promise<{ tmdb_id: number; media_type: string }[]> {
-  const result = await admin
-    .from('pool_titles')
-    .select('tmdb_id, media_type')
-    .eq('pool_id', poolId)
-    .order('tmdb_id')
-    .order('media_type');
+/**
+ * The titles in a pool, named by the provider that supplied them.
+ *
+ * Pools store canonical media ids, so "which titles are in this pool" is a
+ * question about identity mapping now rather than a column read. Resolving back
+ * through media_external_ids is what keeps these assertions readable, and it
+ * also proves the mapping was written: a pool title with no identity under the
+ * expected provider is a failure rather than a silently missing row.
+ */
+async function titlesForPool(
+  poolId: string,
+  provider = 'tmdb'
+): Promise<{ tmdb_id: number; media_type: string }[]> {
+  const titles = await admin.from('pool_titles').select('media_id').eq('pool_id', poolId);
+  if (titles.error) throw titles.error;
 
-  if (result.error) throw result.error;
-  return result.data ?? [];
+  const mediaIds = (titles.data ?? []).map((row) => row.media_id as string);
+  if (mediaIds.length === 0) return [];
+
+  const mapped = await admin
+    .from('media_external_ids')
+    .select('media_id, media_type, external_id')
+    .eq('provider', provider)
+    .in('media_id', mediaIds);
+  if (mapped.error) throw mapped.error;
+
+  const byMediaId = new Map(mapped.data!.map((row) => [row.media_id as string, row]));
+
+  return mediaIds
+    .map((mediaId) => {
+      const row = byMediaId.get(mediaId);
+      if (!row) throw new Error(`Pool title ${mediaId} carries no ${provider} identity.`);
+      return { tmdb_id: Number(row.external_id), media_type: row.media_type as string };
+    })
+    .sort((a, b) => a.tmdb_id - b.tmdb_id || a.media_type.localeCompare(b.media_type));
 }
 
 describe('generate-pool Edge Function contract', () => {
