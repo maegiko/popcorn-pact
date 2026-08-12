@@ -129,25 +129,66 @@ select is(
   'newly created pool may temporarily contain zero titles'
 );
 
+-- Canonical media the pool tests below put into pools. Identity is the media
+-- row; the provider mappings exist so the assertions can still talk about "the
+-- same provider id as a movie and as a series", which is the property under
+-- test.
+insert into public.media (id, media_type, title)
+values
+  ('30000000-0000-0000-0000-000000000001'::uuid, 'movie', 'Pool Movie 123'),
+  ('30000000-0000-0000-0000-000000000002'::uuid, 'movie', 'Pool Movie 456'),
+  ('30000000-0000-0000-0000-000000000003'::uuid, 'tv', 'Pool Series 123');
+
+-- A fixture provider slug rather than a real one. `provider` leads the primary
+-- key of media_external_ids, so a slug nothing else writes makes these rows
+-- unreachable from any data the edge suites leave behind in the same local
+-- database -- and this file is about the identity rules, not about TMDB.
+insert into public.media_external_ids (media_id, media_type, provider, external_id)
+values
+  ('30000000-0000-0000-0000-000000000001'::uuid, 'movie', 'pgtap-pools', '123'),
+  ('30000000-0000-0000-0000-000000000002'::uuid, 'movie', 'pgtap-pools', '456'),
+  ('30000000-0000-0000-0000-000000000003'::uuid, 'tv', 'pgtap-pools', '123');
+
 set local role authenticated;
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000401', true);
 select set_config('request.jwt.claim.role', 'authenticated', true);
 create temporary table first_title_result on commit drop as
-select * from public.add_pool_title((select pool_id from owner_generated_pool), 123, 'movie');
+select * from public.add_pool_title(
+  (select pool_id from owner_generated_pool),
+  '30000000-0000-0000-0000-000000000001'::uuid
+);
 create temporary table second_title_result on commit drop as
-select * from public.add_pool_title((select pool_id from owner_generated_pool), 456, 'movie');
+select * from public.add_pool_title(
+  (select pool_id from owner_generated_pool),
+  '30000000-0000-0000-0000-000000000002'::uuid
+);
 create temporary table same_id_tv_result on commit drop as
-select * from public.add_pool_title((select pool_id from owner_generated_pool), 123, 'tv');
+select * from public.add_pool_title(
+  (select pool_id from owner_generated_pool),
+  '30000000-0000-0000-0000-000000000003'::uuid
+);
 create temporary table duplicate_title_result on commit drop as
-select * from public.add_pool_title((select pool_id from owner_generated_pool), 123, 'movie');
-create temporary table invalid_media_result on commit drop as
-select * from public.add_pool_title((select pool_id from owner_generated_pool), 789, 'podcast');
+select * from public.add_pool_title(
+  (select pool_id from owner_generated_pool),
+  '30000000-0000-0000-0000-000000000001'::uuid
+);
+create temporary table unknown_media_result on commit drop as
+select * from public.add_pool_title(
+  (select pool_id from owner_generated_pool),
+  '30000000-0000-0000-0000-0000000009ff'::uuid
+);
 create temporary table same_title_other_pool_result on commit drop as
-select * from public.add_pool_title((select pool_id from owner_manual_pool), 123, 'movie');
+select * from public.add_pool_title(
+  (select pool_id from owner_manual_pool),
+  '30000000-0000-0000-0000-000000000001'::uuid
+);
 
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000403', true);
 create temporary table stranger_add_title_attempt on commit drop as
-select * from public.add_pool_title((select pool_id from owner_generated_pool), 999, 'movie');
+select * from public.add_pool_title(
+  (select pool_id from owner_generated_pool),
+  '30000000-0000-0000-0000-000000000002'::uuid
+);
 
 reset role;
 
@@ -162,22 +203,28 @@ select ok(
   (select status = 'added' from same_id_tv_result)
   and exists (
     select 1
-    from public.pool_titles as movie
-    join public.pool_titles as tv
-      on tv.pool_id = movie.pool_id
-     and tv.tmdb_id = movie.tmdb_id
-     and tv.media_type = 'tv'
-    where movie.pool_id = (select pool_id from owner_generated_pool)
-      and movie.tmdb_id = 123
-      and movie.media_type = 'movie'
+    from public.pool_titles as movie_title
+    join public.media_external_ids as movie_id
+      on movie_id.media_id = movie_title.media_id
+     and movie_id.media_type = 'movie'
+    join public.media_external_ids as tv_id
+      on tv_id.provider = movie_id.provider
+     and tv_id.external_id = movie_id.external_id
+     and tv_id.media_type = 'tv'
+    join public.pool_titles as tv_title
+      on tv_title.media_id = tv_id.media_id
+     and tv_title.pool_id = movie_title.pool_id
+    where movie_title.pool_id = (select pool_id from owner_generated_pool)
+      and movie_id.provider = 'pgtap-pools'
+      and movie_id.external_id = '123'
   ),
-  'movie and tv with the same TMDB ID are distinct inside a pool'
+  'movie and tv sharing one provider ID are distinct titles inside a pool'
 );
 
 select is(
   (select status from duplicate_title_result),
   'duplicate_title',
-  'same TMDB ID and media type cannot appear twice in the same pool'
+  'the same canonical title cannot appear twice in the same pool'
 );
 
 select is(
@@ -187,9 +234,9 @@ select is(
 );
 
 select is(
-  (select status from invalid_media_result),
-  'invalid_media_type',
-  'pool title media_type is restricted to movie and tv'
+  (select status from unknown_media_result),
+  'unknown_media',
+  'a pool title must name a canonical media record that exists'
 );
 
 select is(
@@ -216,8 +263,7 @@ select ok(
     select 1
     from public.pool_titles as pt
     where pt.pool_id = (select pool_id from owner_generated_pool)
-      and pt.tmdb_id = 123
-      and pt.media_type = 'movie'
+      and pt.media_id = '30000000-0000-0000-0000-000000000001'::uuid
   ),
   'group members may read titles in their group''s pools'
 );
@@ -258,8 +304,11 @@ select throws_ok(
 
 select throws_ok(
   $$
-    insert into public.pool_titles (pool_id, tmdb_id, media_type)
-    values ((select pool_id from owner_generated_pool), 321, 'movie')
+    insert into public.pool_titles (pool_id, media_id)
+    values (
+      (select pool_id from owner_generated_pool),
+      '30000000-0000-0000-0000-000000000002'::uuid
+    )
   $$,
   '42501',
   'permission denied for table pool_titles',
@@ -315,7 +364,10 @@ select set_config('request.jwt.claim.role', 'authenticated', true);
 create temporary table grace_create_pool_attempt on commit drop as
 select * from public.create_pool('10000000-0000-0000-0000-000000000401'::uuid, 'manual');
 create temporary table grace_add_title_attempt on commit drop as
-select * from public.add_pool_title('20000000-0000-0000-0000-000000000401'::uuid, 111, 'movie');
+select * from public.add_pool_title(
+  '20000000-0000-0000-0000-000000000401'::uuid,
+  '30000000-0000-0000-0000-000000000001'::uuid
+);
 
 reset role;
 
@@ -339,10 +391,10 @@ values (
   'manual'
 );
 
-insert into public.pool_titles (pool_id, tmdb_id, media_type)
+insert into public.pool_titles (pool_id, media_id)
 values
-  ('20000000-0000-0000-0000-000000000402'::uuid, 700, 'movie'),
-  ('20000000-0000-0000-0000-000000000402'::uuid, 701, 'tv');
+  ('20000000-0000-0000-0000-000000000402'::uuid, '30000000-0000-0000-0000-000000000001'::uuid),
+  ('20000000-0000-0000-0000-000000000402'::uuid, '30000000-0000-0000-0000-000000000003'::uuid);
 
 delete from public.pools
 where id = '20000000-0000-0000-0000-000000000402'::uuid;
@@ -365,8 +417,8 @@ values (
   'manual'
 );
 
-insert into public.pool_titles (pool_id, tmdb_id, media_type)
-values ('20000000-0000-0000-0000-000000000403'::uuid, 800, 'movie');
+insert into public.pool_titles (pool_id, media_id)
+values ('20000000-0000-0000-0000-000000000403'::uuid, '30000000-0000-0000-0000-000000000002'::uuid);
 
 delete from public.groups
 where id = (select group_id from pool_group);
