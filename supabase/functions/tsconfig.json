@@ -10,6 +10,9 @@
     "target": "esnext",
     "module": "esnext",
     "moduleResolution": "bundler",
+    // Deno resolves modules by literal file path, so imports between functions
+    // and ../_shared must carry the .ts extension. tsc rejects that by default.
+    "allowImportingTsExtensions": true,
     // dom supplies fetch, Request/Response, Headers, URL and AbortSignal, which
     // Deno implements natively; deno.d.ts supplies the rest.
     "lib": ["esnext", "dom"],
