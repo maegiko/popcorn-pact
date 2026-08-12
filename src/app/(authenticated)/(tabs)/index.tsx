@@ -115,7 +115,8 @@ function poolMessage(state: GeneratePoolState): string | null {
  */
 function PoolSection({ groupId }: { groupId: string }) {
   const theme = useTheme();
-  const { state, generate, reset } = useGeneratePool(groupId);
+  const router = useRouter();
+  const { state, poolId, generate, reset } = useGeneratePool(groupId);
   const [fineTuneMessage, setFineTuneMessage] = useState<string | null>(null);
   const busy = state === 'generating';
 
@@ -124,8 +125,17 @@ function PoolSection({ groupId }: { groupId: string }) {
       <ThemedView type="backgroundElement" style={styles.poolCard}>
         <ThemedText type="smallBold">Your pool is ready</ThemedText>
         <ThemedText type="small" themeColor="textSecondary" style={styles.message}>
-          Swiping starts here soon. This pool is saved and waiting.
+          Swipe through it together to find something to watch.
         </ThemedText>
+
+        {poolId && (
+          <Pressable
+            onPress={() => router.push({ pathname: '/pool/[poolId]', params: { poolId } })}
+            style={[styles.button, { backgroundColor: theme.backgroundSelected }]}>
+            <ThemedText type="smallBold">Start swiping</ThemedText>
+          </Pressable>
+        )}
+
         <Pressable onPress={reset} style={styles.switchButton}>
           <ThemedText type="small" themeColor="textSecondary">
             Make a new pool

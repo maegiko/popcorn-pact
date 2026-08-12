@@ -14,7 +14,8 @@ import { GroupProvider } from '@/lib/group';
  * that need a partner wrap themselves in <GroupRequired />.
  *
  * The Stack exists so `pair` can be presented over the tabs rather than
- * becoming one.
+ * becoming one. `pool/[poolId]` is the same idea for the swipe deck: a
+ * detail-style push outside the tab bar, not a tab of its own.
  */
 export default function AuthenticatedLayout() {
   return (
@@ -22,6 +23,7 @@ export default function AuthenticatedLayout() {
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="pair" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="pool/[poolId]" />
       </Stack>
     </GroupProvider>
   );
