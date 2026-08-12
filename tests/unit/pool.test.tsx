@@ -158,6 +158,24 @@ describe('useGeneratePool', () => {
     expect(current().poolId).toBeNull();
   });
 
+  // The server can decline to narrow by streaming service -- not every media
+  // provider has availability data. The client has to be able to say so without
+  // learning anything about which upstream is configured.
+  test('filter_unsupported is surfaced as its own outcome rather than an error', async () => {
+    mockInvoke.mockResolvedValueOnce({
+      data: { status: 'filter_unsupported', poolId: null },
+      error: null,
+    });
+    const { current } = await renderPool('group-1');
+
+    await act(async () => {
+      await current().generate();
+    });
+
+    await expectState(current, 'filter_unsupported');
+    expect(current().poolId).toBeNull();
+  });
+
   test('an unrecognised response collapses to error rather than crashing', async () => {
     mockInvoke.mockResolvedValueOnce({ data: { status: 'something_new' }, error: null });
     const { current } = await renderPool('group-1');
