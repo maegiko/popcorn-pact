@@ -152,6 +152,10 @@ jest.mock('@/lib/pool', () => ({
     generate: jest.fn(),
     reset: jest.fn(),
   }),
+  useLatestActivePool: () => ({
+    status: 'none',
+    poolId: null,
+  }),
 }));
 
 beforeEach(() => {

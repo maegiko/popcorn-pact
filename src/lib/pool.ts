@@ -1,5 +1,5 @@
 import { FunctionsHttpError } from '@supabase/supabase-js';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { supabase } from '@/lib/supabase';
 
@@ -129,4 +129,79 @@ export function useGeneratePool(groupId: string | null) {
   }, []);
 
   return { state, poolId, generate, reset };
+}
+
+export type LatestActivePoolStatus = 'loading' | 'found' | 'none' | 'error';
+
+type LatestActivePoolResult =
+  | { groupId: string; status: 'found'; poolId: string }
+  | { groupId: string; status: 'none' }
+  | { groupId: string; status: 'error' };
+
+type LatestActivePoolRow = { id: string };
+
+/**
+ * The group-level "resume where you left off" lookup: the newest pool this
+ * group has not completed. `status` is a lifecycle property of the pool
+ * itself, not of any one member's swipe progress -- a member who finished
+ * their own deck does not make the pool any less active. See the pools
+ * lifecycle migration, which this mirrors exactly:
+ *
+ *   where group_id = :group_id and status = 'active'
+ *   order by created_at desc
+ *   limit 1
+ *
+ * A direct RLS-backed SELECT rather than an RPC: the read is already scoped to
+ * the caller's groups by the existing pools policy, grace preserves it
+ * unconditionally, and there is nothing trusted left to compute server-side.
+ */
+export async function loadLatestActivePool(groupId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('pools')
+    .select('id')
+    .eq('group_id', groupId)
+    .eq('status', 'active')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return (data as LatestActivePoolRow | null)?.id ?? null;
+}
+
+/**
+ * Tracks the current group's latest active pool for Home's recovery state.
+ *
+ * Tagged by `groupId`, the same discipline `useGeneratePool` above and
+ * `group.tsx` use: a lookup that resolves after the group has changed
+ * underneath this screen reads as stale rather than being adopted, so
+ * switching groups (or leaving one) never surfaces another group's pool.
+ */
+export function useLatestActivePool(groupId: string | null) {
+  const [result, setResult] = useState<LatestActivePoolResult | null>(null);
+
+  useEffect(() => {
+    if (!groupId) return;
+
+    let cancelled = false;
+
+    loadLatestActivePool(groupId)
+      .then((poolId) => {
+        if (cancelled) return;
+        setResult(poolId ? { groupId, status: 'found', poolId } : { groupId, status: 'none' });
+      })
+      .catch(() => {
+        if (!cancelled) setResult({ groupId, status: 'error' });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [groupId]);
+
+  const current = result && result.groupId === groupId ? result : null;
+  const status: LatestActivePoolStatus = !current ? 'loading' : current.status;
+  const poolId = current?.status === 'found' ? current.poolId : null;
+
+  return { status, poolId };
 }

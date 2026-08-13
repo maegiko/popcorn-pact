@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 
 import HomeScreen from '@/app/(authenticated)/(tabs)/index';
 import type { GroupSummary } from '@/lib/group';
-import type { GeneratePoolState } from '@/lib/pool';
+import type { GeneratePoolState, LatestActivePoolStatus } from '@/lib/pool';
 
 type MockAuthValue = {
   status: 'ready';
@@ -24,9 +24,15 @@ type MockPoolValue = {
   reset: jest.Mock;
 };
 
+type MockActivePoolValue = {
+  status: LatestActivePoolStatus;
+  poolId: string | null;
+};
+
 let mockAuthValue: MockAuthValue;
 let mockGroupValue: MockGroupValue;
 let mockPoolValue: MockPoolValue;
+let mockActivePoolValue: MockActivePoolValue;
 const mockRouterPush = jest.fn();
 
 jest.mock('expo-router', () => ({
@@ -47,6 +53,7 @@ jest.mock('@/lib/group', () => ({
 
 jest.mock('@/lib/pool', () => ({
   useGeneratePool: () => mockPoolValue,
+  useLatestActivePool: () => mockActivePoolValue,
 }));
 
 function group(overrides: Partial<GroupSummary> = {}): GroupSummary {
@@ -82,6 +89,10 @@ beforeEach(() => {
     poolId: null,
     generate: jest.fn(),
     reset: jest.fn(),
+  };
+  mockActivePoolValue = {
+    status: 'none',
+    poolId: null,
   };
 });
 
@@ -131,5 +142,110 @@ describe('HomeScreen pool CTA', () => {
 
     expect(mockPoolValue.reset).toHaveBeenCalledTimes(1);
     expect(mockRouterPush).not.toHaveBeenCalled();
+  });
+});
+
+describe('HomeScreen pool recovery', () => {
+  test('no active pool falls back to the beginner Quick Start UI', async () => {
+    mockActivePoolValue = { status: 'none', poolId: null };
+
+    const screen = await render(<HomeScreen />);
+
+    expect(screen.getByText('Quick Start')).toBeTruthy();
+    expect(screen.queryByText('Continue swiping')).toBeNull();
+  });
+
+  test('an active pool shows the recovery state with Continue swiping', async () => {
+    mockActivePoolValue = { status: 'found', poolId: 'pool-77' };
+
+    const screen = await render(<HomeScreen />);
+
+    expect(screen.getByText('Continue swiping')).toBeTruthy();
+    expect(screen.queryByText('Quick Start')).toBeNull();
+  });
+
+  test('pressing Continue swiping navigates with the exact recovered pool id', async () => {
+    mockActivePoolValue = { status: 'found', poolId: 'pool-77' };
+
+    const screen = await render(<HomeScreen />);
+    fireEvent.press(screen.getByText('Continue swiping'));
+
+    expect(mockRouterPush).toHaveBeenCalledWith({
+      pathname: '/pool/[poolId]',
+      params: { poolId: 'pool-77' },
+    });
+  });
+
+  // The boundary query (group_id + status = 'active', newest first) already
+  // excludes completed pools, so a group whose entire history is completed
+  // reports the same 'none' result as a group with no pools at all -- Home
+  // does not need to know the difference.
+  test('completed-only pool history behaves the same as having no active pool', async () => {
+    mockActivePoolValue = { status: 'none', poolId: null };
+
+    const screen = await render(<HomeScreen />);
+
+    expect(screen.getByText('Quick Start')).toBeTruthy();
+    expect(screen.queryByText('Continue swiping')).toBeNull();
+  });
+
+  // Simulates the boundary having already applied ORDER BY created_at DESC
+  // LIMIT 1 over active-only rows: a newer completed pool never reaches this
+  // component, and the older active one is what gets surfaced and navigated
+  // to.
+  test('an older active pool is surfaced when a newer completed pool is excluded by the boundary', async () => {
+    mockActivePoolValue = { status: 'found', poolId: 'pool-older-active' };
+
+    const screen = await render(<HomeScreen />);
+    fireEvent.press(screen.getByText('Continue swiping'));
+
+    expect(mockRouterPush).toHaveBeenCalledWith({
+      pathname: '/pool/[poolId]',
+      params: { poolId: 'pool-older-active' },
+    });
+  });
+
+  test('Make new pool still requests a generated pool from the recovery state', async () => {
+    mockActivePoolValue = { status: 'found', poolId: 'pool-77' };
+
+    const screen = await render(<HomeScreen />);
+    fireEvent.press(screen.getByText('Make new pool'));
+
+    expect(mockPoolValue.generate).toHaveBeenCalledTimes(1);
+  });
+
+  test('a newly generated pool is surfaced over a stale recovered pool', async () => {
+    mockActivePoolValue = { status: 'found', poolId: 'pool-old' };
+    mockPoolValue = { ...mockPoolValue, state: 'created', poolId: 'pool-new' };
+
+    const screen = await render(<HomeScreen />);
+
+    expect(screen.getByText('Start swiping')).toBeTruthy();
+    expect(screen.queryByText('Continue swiping')).toBeNull();
+
+    fireEvent.press(screen.getByText('Start swiping'));
+
+    expect(mockRouterPush).toHaveBeenCalledWith({
+      pathname: '/pool/[poolId]',
+      params: { poolId: 'pool-new' },
+    });
+  });
+
+  test('a recovery lookup failure falls back to Quick Start without crashing', async () => {
+    mockActivePoolValue = { status: 'error', poolId: null };
+
+    const screen = await render(<HomeScreen />);
+
+    expect(screen.getByText('Quick Start')).toBeTruthy();
+    expect(screen.getByText('Something went wrong. Try again.')).toBeTruthy();
+  });
+
+  test('a still-loading recovery lookup shows neither the beginner UI nor the recovery state', async () => {
+    mockActivePoolValue = { status: 'loading', poolId: null };
+
+    const screen = await render(<HomeScreen />);
+
+    expect(screen.queryByText('Quick Start')).toBeNull();
+    expect(screen.queryByText('Continue swiping')).toBeNull();
   });
 });

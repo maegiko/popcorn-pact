@@ -10,7 +10,7 @@ import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useSession } from '@/lib/auth';
 import { useGroups } from '@/lib/group';
-import { useGeneratePool, type GeneratePoolState } from '@/lib/pool';
+import { useGeneratePool, useLatestActivePool, type GeneratePoolState } from '@/lib/pool';
 
 /**
  * The shared watching surface. The swipe deck lands inside <GroupRequired /> in
@@ -109,17 +109,28 @@ function poolMessage(state: GeneratePoolState): string | null {
  * point for filters the product does not have yet (runtime, genre, mood), so it
  * surfaces a "coming soon" message rather than inventing settings.
  *
- * `useGeneratePool` is keyed on `groupId`, so if the group changes underneath
- * this screen (leaving, switching), any in-flight request for the old group is
- * dropped rather than landing here.
+ * Before offering that beginner flow, Home checks whether the group already
+ * has a pool it has not finished with -- `useLatestActivePool` mirrors the
+ * pools lifecycle migration's recovery rule (newest pool with status =
+ * 'active'). That status is group-level: a member who swiped through their
+ * own deck does not hide the pool, only the group completing it would, and
+ * nothing here does that.
+ *
+ * Both hooks are keyed on `groupId`, so if the group changes underneath this
+ * screen (leaving, switching), any in-flight request or lookup for the old
+ * group is dropped rather than landing here.
  */
 function PoolSection({ groupId }: { groupId: string }) {
   const theme = useTheme();
   const router = useRouter();
+  const activePool = useLatestActivePool(groupId);
   const { state, poolId, generate, reset } = useGeneratePool(groupId);
   const [fineTuneMessage, setFineTuneMessage] = useState<string | null>(null);
   const busy = state === 'generating';
 
+  // A pool this member just generated always wins over a recovered one, even
+  // if the recovery lookup found something else first -- it is the newest
+  // active pool the instant it is created.
   if (state === 'created') {
     return (
       <ThemedView type="backgroundElement" style={styles.poolCard}>
@@ -145,7 +156,61 @@ function PoolSection({ groupId }: { groupId: string }) {
     );
   }
 
-  const message = poolMessage(state) ?? fineTuneMessage;
+  // Nothing to show yet either way -- avoid flashing the beginner UI while
+  // the recovery lookup is still in flight.
+  if (activePool.status === 'loading') {
+    return null;
+  }
+
+  if (activePool.status === 'found' && activePool.poolId) {
+    const recoveredPoolId = activePool.poolId;
+
+    return (
+      <ThemedView type="backgroundElement" style={styles.poolCard}>
+        <ThemedText type="smallBold">Pick up where you left off</ThemedText>
+        <ThemedText type="small" themeColor="textSecondary" style={styles.message}>
+          You still have a pool to swipe through together.
+        </ThemedText>
+
+        <Pressable
+          onPress={() =>
+            router.push({ pathname: '/pool/[poolId]', params: { poolId: recoveredPoolId } })
+          }
+          disabled={busy}
+          style={[
+            styles.button,
+            { backgroundColor: theme.backgroundSelected, opacity: busy ? 0.5 : 1 },
+          ]}>
+          <ThemedText type="smallBold">Continue swiping</ThemedText>
+        </Pressable>
+
+        <Pressable
+          onPress={() => {
+            setFineTuneMessage(null);
+            generate();
+          }}
+          disabled={busy}
+          style={styles.switchButton}>
+          <ThemedText type="small" themeColor="textSecondary">
+            {busy ? 'Finding titles…' : 'Make new pool'}
+          </ThemedText>
+        </Pressable>
+
+        {poolMessage(state) && (
+          <ThemedText type="small" themeColor="textSecondary" style={styles.message}>
+            {poolMessage(state)}
+          </ThemedText>
+        )}
+      </ThemedView>
+    );
+  }
+
+  // activePool.status is 'none' or 'error' here -- a failed recovery lookup
+  // falls back to the same beginner flow a group with no pool yet gets,
+  // rather than dead-ending Home, with the same error copy/style Quick Start
+  // itself uses for a failure.
+  const message =
+    poolMessage(state) ?? fineTuneMessage ?? (activePool.status === 'error' ? poolMessage('error') : null);
 
   return (
     <ThemedView type="backgroundElement" style={styles.poolCard}>

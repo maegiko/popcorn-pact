@@ -2,18 +2,50 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 import { act, cleanup, render, waitFor } from '@testing-library/react-native';
 import { useEffect } from 'react';
 
-import { useGeneratePool, type GeneratePoolState } from '@/lib/pool';
+import { loadLatestActivePool, useGeneratePool, useLatestActivePool, type GeneratePoolState } from '@/lib/pool';
 import { supabase } from '@/lib/supabase';
 
 type ObservedPool = ReturnType<typeof useGeneratePool>;
+type ObservedActivePool = ReturnType<typeof useLatestActivePool>;
+
+type PoolsQueryResponse = { data: { id: string } | null; error: { message: string } | null };
+type PoolsQuery = {
+  select: jest.Mock<PoolsQuery, unknown[]>;
+  eq: jest.Mock<PoolsQuery, unknown[]>;
+  order: jest.Mock<PoolsQuery, unknown[]>;
+  limit: jest.Mock<PoolsQuery, unknown[]>;
+  maybeSingle: jest.Mock<Promise<PoolsQueryResponse>, []>;
+};
+
+let mockPoolsResponses: (PoolsQueryResponse | Promise<PoolsQueryResponse>)[] = [];
 
 jest.mock('@/lib/supabase', () => ({
   supabase: {
     functions: { invoke: jest.fn() },
+    from: jest.fn(() => mockCreatePoolsQuery()),
   },
 }));
 
+function mockCreatePoolsQuery(): PoolsQuery {
+  const query = {} as PoolsQuery;
+
+  Object.assign(query, {
+    select: jest.fn(() => query),
+    eq: jest.fn(() => query),
+    order: jest.fn(() => query),
+    limit: jest.fn(() => query),
+    maybeSingle: jest.fn(async () => {
+      const next = mockPoolsResponses.shift();
+      if (!next) throw new Error('No mocked pools response queued.');
+      return next;
+    }),
+  });
+
+  return query;
+}
+
 const mockInvoke = (supabase as unknown as { functions: { invoke: jest.Mock } }).functions.invoke;
+const mockFrom = (supabase as unknown as { from: jest.Mock }).from;
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
 
@@ -58,8 +90,42 @@ async function renderPool(groupId: string | null) {
   };
 }
 
+function ActivePoolProbe({
+  groupId,
+  onChange,
+}: {
+  groupId: string | null;
+  onChange: (value: ObservedActivePool) => void;
+}) {
+  const value = useLatestActivePool(groupId);
+
+  useEffect(() => {
+    onChange(value);
+  }, [value, onChange]);
+
+  return null;
+}
+
+async function renderActivePool(groupId: string | null) {
+  const observed: ObservedActivePool[] = [];
+  const onChange = (value: ObservedActivePool) => observed.push(value);
+  const result = await render(<ActivePoolProbe groupId={groupId} onChange={onChange} />);
+
+  return {
+    ...result,
+    observed,
+    onChange,
+    current: () => {
+      const item = observed.at(-1);
+      if (!item) throw new Error('Expected at least one observed active-pool value.');
+      return item;
+    },
+  };
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
+  mockPoolsResponses = [];
 });
 
 afterEach(() => {
@@ -205,5 +271,93 @@ describe('useGeneratePool', () => {
 
     expect(current().state).toBe('idle');
     expect(current().poolId).toBeNull();
+  });
+});
+
+describe('loadLatestActivePool', () => {
+  test('surfaces the id the boundary returns for an active pool', async () => {
+    mockPoolsResponses = [{ data: { id: 'pool-9' }, error: null }];
+
+    await expect(loadLatestActivePool('group-1')).resolves.toBe('pool-9');
+    expect(mockFrom).toHaveBeenCalledWith('pools');
+  });
+
+  // The where group_id/status = 'active' order by created_at desc limit 1
+  // query returns no row once every pool for the group is completed. That is
+  // mocked directly at the boundary here rather than re-derived client-side --
+  // this function does no filtering of its own.
+  test('a completed-only pool history reads as no active pool', async () => {
+    mockPoolsResponses = [{ data: null, error: null }];
+
+    await expect(loadLatestActivePool('group-1')).resolves.toBeNull();
+  });
+
+  // The boundary's own ORDER BY created_at DESC LIMIT 1 already excludes a
+  // newer completed pool before a row ever reaches this function -- there is
+  // nothing left to re-filter, so the older active pool is trusted as-is.
+  test('an older active pool is surfaced when a newer completed pool is excluded by the boundary', async () => {
+    mockPoolsResponses = [{ data: { id: 'pool-older-active' }, error: null }];
+
+    await expect(loadLatestActivePool('group-1')).resolves.toBe('pool-older-active');
+  });
+
+  test('a lookup failure throws rather than silently reporting no pool', async () => {
+    mockPoolsResponses = [{ data: null, error: { message: 'Network unavailable' } }];
+
+    await expect(loadLatestActivePool('group-1')).rejects.toBeTruthy();
+  });
+});
+
+describe('useLatestActivePool', () => {
+  test('reports the newest active pool the boundary returns', async () => {
+    mockPoolsResponses = [{ data: { id: 'pool-1' }, error: null }];
+    const { current } = await renderActivePool('group-1');
+
+    await waitFor(() => expect(current().status).toBe('found'));
+    expect(current().poolId).toBe('pool-1');
+  });
+
+  test('reports none when the boundary finds no active pool', async () => {
+    mockPoolsResponses = [{ data: null, error: null }];
+    const { current } = await renderActivePool('group-1');
+
+    await waitFor(() => expect(current().status).toBe('none'));
+    expect(current().poolId).toBeNull();
+  });
+
+  test('a lookup failure is reported as an error status rather than thrown', async () => {
+    mockPoolsResponses = [{ data: null, error: { message: 'Network unavailable' } }];
+    const { current } = await renderActivePool('group-1');
+
+    await waitFor(() => expect(current().status).toBe('error'));
+    expect(current().poolId).toBeNull();
+  });
+
+  test('a response for a group the caller has since switched away from is discarded', async () => {
+    const pendingGroup1 = deferred<PoolsQueryResponse>();
+    mockPoolsResponses = [pendingGroup1.promise as unknown as PoolsQueryResponse];
+    const { current, rerender, onChange } = await renderActivePool('group-1');
+
+    expect(current().status).toBe('loading');
+
+    // Queue group-2's response before switching -- its effect fires
+    // synchronously inside the rerender below.
+    mockPoolsResponses.push({ data: { id: 'pool-2' }, error: null });
+
+    await act(async () => {
+      await rerender(<ActivePoolProbe groupId="group-2" onChange={onChange} />);
+    });
+
+    await waitFor(() => expect(current().status).toBe('found'));
+    expect(current().poolId).toBe('pool-2');
+
+    // The still-pending group-1 lookup resolving afterwards must not
+    // overwrite group-2's already-adopted result.
+    await act(async () => {
+      pendingGroup1.resolve({ data: { id: 'pool-1' }, error: null });
+    });
+
+    expect(current().status).toBe('found');
+    expect(current().poolId).toBe('pool-2');
   });
 });
