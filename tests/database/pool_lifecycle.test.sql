@@ -215,11 +215,18 @@ reset role;
 
 update public.pools as p
 set created_at = case p.id
+  when (select pool_id from manual_pool) then timestamp with time zone '2026-08-13 08:00:00+00'
+  when (select pool_id from generated_pool) then timestamp with time zone '2026-08-13 08:30:00+00'
   when (select pool_id from older_active_pool) then timestamp with time zone '2026-08-13 10:00:00+00'
   when (select pool_id from newer_active_pool) then timestamp with time zone '2026-08-13 11:00:00+00'
   else p.created_at
 end
-where p.id in ((select pool_id from older_active_pool), (select pool_id from newer_active_pool));
+where p.id in (
+  (select pool_id from manual_pool),
+  (select pool_id from generated_pool),
+  (select pool_id from older_active_pool),
+  (select pool_id from newer_active_pool)
+);
 
 
 -- ---------------------------------------------------------------------------
