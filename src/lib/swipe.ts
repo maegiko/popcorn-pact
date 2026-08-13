@@ -40,6 +40,7 @@ export type RecordSwipeStatus =
   | 'media_not_in_pool'
   | 'invalid_decision'
   | 'group_in_grace'
+  | 'group_too_small'
   | 'error';
 
 export type UndoStatus = 'undone' | 'nothing_to_undo' | 'not_a_member' | 'group_in_grace' | 'error';
@@ -53,6 +54,7 @@ const RECORD_SWIPE_STATUSES = new Set<string>([
   'media_not_in_pool',
   'invalid_decision',
   'group_in_grace',
+  'group_too_small',
 ]);
 
 const UNDO_STATUSES = new Set<string>(['undone', 'nothing_to_undo', 'not_a_member', 'group_in_grace']);
@@ -131,12 +133,18 @@ export async function loadPoolDeck(poolId: string): Promise<PoolDeck> {
   return { media, swipes: swipeRows };
 }
 
-/** Records the caller's decision for a title in a pool. See swipes migration for the status contract. */
+/**
+ * Records the caller's decision for a title in a pool. See swipes migration
+ * for the status contract, and the matches migration for match_created --
+ * true only for the exact call whose like completed every current member's
+ * agreement, false for every other outcome including a duplicate/rejected
+ * swipe or a successful like that did not complete the set.
+ */
 export async function recordSwipe(
   poolId: string,
   mediaId: string,
   decision: 'like' | 'pass'
-): Promise<{ status: RecordSwipeStatus }> {
+): Promise<{ status: RecordSwipeStatus; matchCreated: boolean }> {
   const { data, error } = await supabase.rpc('record_swipe', {
     p_pool_id: poolId,
     p_media_id: mediaId,
@@ -144,9 +152,12 @@ export async function recordSwipe(
   });
   if (error) throw error;
 
-  const row = firstRow<{ status: string }>(data);
+  const row = firstRow<{ status: string; match_created?: boolean }>(data);
   const status = row?.status;
-  return { status: status && RECORD_SWIPE_STATUSES.has(status) ? (status as RecordSwipeStatus) : 'error' };
+  return {
+    status: status && RECORD_SWIPE_STATUSES.has(status) ? (status as RecordSwipeStatus) : 'error',
+    matchCreated: row?.match_created === true,
+  };
 }
 
 /** Undoes the caller's pass, while it is still the decision just made. */

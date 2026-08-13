@@ -34,6 +34,10 @@ export function SwipeDeck({ poolId }: { poolId: string }) {
   // backend's `undoable` flag, which moves to whichever pass was made most
   // recently and is cleared by any further decision.
   const [undoableId, setUndoableId] = useState<string | null>(null);
+  // Whether the like just recorded completed the group's agreement. A
+  // dismissible moment layered over the (already-advanced) deck, never a
+  // detour from it -- matching is independent of the pool's own lifecycle.
+  const [showMatch, setShowMatch] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,6 +57,7 @@ export function SwipeDeck({ poolId }: { poolId: string }) {
         setDeck({ phase: 'ready', queue, byId });
         setError(null);
         setUndoableId(persistedUndoable);
+        setShowMatch(false);
       })
       .catch(() => {
         if (!cancelled) setDeck({ phase: 'error' });
@@ -70,6 +75,10 @@ export function SwipeDeck({ poolId }: { poolId: string }) {
 
     setPending(true);
     setError(null);
+    // Cleared up front, not just on dismissal: a match moment belongs to the
+    // decision that earned it, and starting a new one -- whatever it turns
+    // out to be -- must not leave a stale banner from the last card behind.
+    setShowMatch(false);
 
     try {
       const result = await recordSwipe(poolId, current.id, decision);
@@ -79,6 +88,11 @@ export function SwipeDeck({ poolId }: { poolId: string }) {
           previous.phase === 'ready' ? { ...previous, queue: previous.queue.slice(1) } : previous
         );
         setUndoableId(decision === 'pass' ? current.id : null);
+        // Only a brand-new recorded like can complete the group's agreement --
+        // a duplicate has nothing new to complete, and a pass never matches.
+        if (decision === 'like' && result.status === 'recorded' && result.matchCreated) {
+          setShowMatch(true);
+        }
       } else {
         setError(ERROR_MESSAGE);
       }
@@ -148,7 +162,31 @@ export function SwipeDeck({ poolId }: { poolId: string }) {
       ) : (
         <ThemedText type="subtitle">You&apos;re done with this pool.</ThemedText>
       )}
+
+      {showMatch && <MatchMoment onDismiss={() => setShowMatch(false)} />}
     </Shell>
+  );
+}
+
+/**
+ * A lightweight, dismissible layer over the deck -- not a replacement for it.
+ * The deck has already advanced by the time this shows, and dismissing it is
+ * the only thing it does: no watched state, no pool completion, nothing that
+ * touches the pool's own lifecycle.
+ */
+function MatchMoment({ onDismiss }: { onDismiss: () => void }) {
+  const theme = useTheme();
+
+  return (
+    <ThemedView type="backgroundElement" style={styles.matchMoment}>
+      <ThemedText type="smallBold">It&apos;s a match!</ThemedText>
+
+      <Pressable
+        onPress={onDismiss}
+        style={[styles.matchDismissButton, { backgroundColor: theme.backgroundSelected }]}>
+        <ThemedText type="smallBold">Keep swiping</ThemedText>
+      </Pressable>
+    </ThemedView>
   );
 }
 
@@ -286,6 +324,18 @@ const styles = StyleSheet.create({
     flex: 1,
     borderRadius: Spacing.two,
     paddingVertical: Spacing.three,
+    alignItems: 'center',
+  },
+  matchMoment: {
+    borderRadius: Spacing.three,
+    padding: Spacing.three,
+    gap: Spacing.two,
+    alignItems: 'center',
+  },
+  matchDismissButton: {
+    borderRadius: Spacing.two,
+    paddingVertical: Spacing.three,
+    paddingHorizontal: Spacing.four,
     alignItems: 'center',
   },
 });

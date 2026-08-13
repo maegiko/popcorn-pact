@@ -38,7 +38,7 @@ type SwipeDeckProps = { poolId: string };
 
 const mockLoadPoolDeck = jest.fn<Promise<PoolDeck>, [string]>();
 const mockRecordSwipe = jest.fn<
-  Promise<{ status: RecordSwipeStatus }>,
+  Promise<{ status: RecordSwipeStatus; matchCreated?: boolean }>,
   [string, string, 'like' | 'pass']
 >();
 const mockUndoLastPass = jest.fn<Promise<{ status: UndoStatus; mediaId: string | null }>, [string]>();
@@ -149,7 +149,11 @@ async function swipeCard(translationX: number) {
 }
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  mockLoadPoolDeck.mockReset();
+  mockRecordSwipe.mockReset();
+  mockUndoLastPass.mockReset();
+  mockRouterPush.mockClear();
+  mockRouterReplace.mockClear();
 });
 
 describe('SwipeDeck loading behavior', () => {
@@ -298,6 +302,76 @@ describe('SwipeDeck like behavior', () => {
     await waitFor(() => expect(screen.getByText('Something went wrong. Try again.')).toBeTruthy());
     expect(screen.getByText('Arrival')).toBeTruthy();
     expect(screen.queryByText('Moonlight')).toBeNull();
+  });
+});
+
+describe('SwipeDeck match moment behavior', () => {
+  test('a match-creating like advances the deck and shows a dismissible match moment', async () => {
+    mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded', matchCreated: true });
+    const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
+
+    await fireEvent.press(screen.getByText('Like'));
+
+    await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
+    expect(screen.getByText("It's a match!")).toBeTruthy();
+    expect(screen.queryByText("You're done with this pool.")).toBeNull();
+
+    await fireEvent.press(screen.getByText('Keep swiping'));
+
+    expect(screen.queryByText("It's a match!")).toBeNull();
+    expect(screen.getByText('Moonlight')).toBeTruthy();
+  });
+
+  test('a successful like without a new match advances without showing match UI', async () => {
+    mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded', matchCreated: false });
+    const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
+
+    await fireEvent.press(screen.getByText('Like'));
+
+    await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
+    expect(screen.queryByText("It's a match!")).toBeNull();
+  });
+
+  test('passes and duplicate likes do not falsely show a match moment', async () => {
+    mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded', matchCreated: false });
+    mockRecordSwipe.mockResolvedValueOnce({ status: 'already_recorded', matchCreated: false });
+    const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B, MOVIE_C]));
+
+    await fireEvent.press(screen.getByText('Pass'));
+    await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
+    expect(screen.queryByText("It's a match!")).toBeNull();
+
+    await fireEvent.press(screen.getByText('Like'));
+    await waitFor(() => expect(screen.getByText('The Matrix')).toBeTruthy());
+    expect(screen.queryByText("It's a match!")).toBeNull();
+  });
+
+  test('rejected and failed likes do not show a match moment', async () => {
+    mockRecordSwipe.mockResolvedValueOnce({ status: 'like_final', matchCreated: false });
+    const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
+
+    await fireEvent.press(screen.getByText('Like'));
+
+    await waitFor(() => expect(screen.getByText('Something went wrong. Try again.')).toBeTruthy());
+    expect(screen.getByText('Arrival')).toBeTruthy();
+    expect(screen.queryByText("It's a match!")).toBeNull();
+  });
+
+  test('multiple independent matches can be dismissed while the deck continues', async () => {
+    mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded', matchCreated: true });
+    mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded', matchCreated: true });
+    const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B, MOVIE_C]));
+
+    await fireEvent.press(screen.getByText('Like'));
+    await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
+    expect(screen.getByText("It's a match!")).toBeTruthy();
+
+    await fireEvent.press(screen.getByText('Keep swiping'));
+    expect(screen.queryByText("It's a match!")).toBeNull();
+
+    await fireEvent.press(screen.getByText('Like'));
+    await waitFor(() => expect(screen.getByText('The Matrix')).toBeTruthy());
+    expect(screen.getByText("It's a match!")).toBeTruthy();
   });
 });
 
