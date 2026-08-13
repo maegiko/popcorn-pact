@@ -52,6 +52,7 @@
     "lint": "expo lint",
     "typecheck": "tsc --noEmit && npm run typecheck:functions",
     "typecheck:functions": "tsc -p supabase/functions --noEmit",
+    "test:all": "npm test && npm run test:database && npm run test:edge && npm run lint && npm run typecheck",
     "test": "jest --verbose",
     "test:unit": "jest tests/unit --verbose",
     "test:component": "jest tests/component --verbose",
