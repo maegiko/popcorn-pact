@@ -57,7 +57,8 @@
     "test:unit": "jest tests/unit --verbose",
     "test:component": "jest tests/component --verbose",
     "test:database": "HOME=/tmp npx supabase test db tests/database",
-    "test:edge": "npx supabase db reset --local && docker restart $(docker ps -qf name=supabase_edge_runtime) > /dev/null && sleep 5 && eval \"$(npx supabase status -o env | grep -E '^[A-Z_]+=')\" && SUPABASE_TEST_ANON_KEY=\"$ANON_KEY\" SUPABASE_TEST_SERVICE_ROLE_KEY=\"$SERVICE_ROLE_KEY\" jest --config jest.edge.config.js --runInBand --verbose"
+    "test:edge": "npx supabase db reset --local && docker restart $(docker ps -qf name=supabase_edge_runtime) > /dev/null && sleep 5 && eval \"$(npx supabase status -o env | grep -E '^[A-Z_]+=')\" && SUPABASE_TEST_ANON_KEY=\"$ANON_KEY\" SUPABASE_TEST_SERVICE_ROLE_KEY=\"$SERVICE_ROLE_KEY\" jest --config jest.edge.config.js --runInBand --verbose",
+    "deploy:supabase": "npx supabase db push && npx supabase functions deploy generate-pool"
   },
   "private": true,
   "jest": {
