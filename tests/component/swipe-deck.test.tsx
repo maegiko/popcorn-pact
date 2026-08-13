@@ -112,7 +112,7 @@ function deferred<T>() {
 }
 
 async function renderDeck(poolId = 'pool-1') {
-  const screen = render(<SwipeDeck poolId={poolId} />);
+  const screen = await render(<SwipeDeck poolId={poolId} />);
   if (missingSwipeDeck) {
     throw new Error('SwipeDeck is not implemented yet.');
   }
@@ -222,12 +222,13 @@ describe('SwipeDeck pass behavior', () => {
     mockRecordSwipe.mockReturnValueOnce(pending.promise);
     const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
 
-    fireEvent.press(screen.getByText('Pass'));
+    const press = fireEvent.press(screen.getByText('Pass'));
 
     expect(mockRecordSwipe).toHaveBeenCalledWith('pool-1', MOVIE_A.id, 'pass');
     expect(screen.getByText('Arrival')).toBeTruthy();
 
     pending.resolve({ status: 'recorded' });
+    await press;
 
     await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
     expect(screen.getByText('Undo')).toBeTruthy();
@@ -237,7 +238,7 @@ describe('SwipeDeck pass behavior', () => {
     mockRecordSwipe.mockResolvedValueOnce({ status: 'already_recorded' });
     const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
 
-    fireEvent.press(screen.getByText('Pass'));
+    await fireEvent.press(screen.getByText('Pass'));
 
     await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
     expect(screen.queryByText('Arrival')).toBeNull();
@@ -248,7 +249,7 @@ describe('SwipeDeck pass behavior', () => {
     mockRecordSwipe.mockRejectedValueOnce(new Error('offline'));
     const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
 
-    fireEvent.press(screen.getByText('Pass'));
+    await fireEvent.press(screen.getByText('Pass'));
 
     await waitFor(() => expect(screen.getByText('Something went wrong. Try again.')).toBeTruthy());
     expect(screen.getByText('Arrival')).toBeTruthy();
@@ -261,7 +262,7 @@ describe('SwipeDeck like behavior', () => {
     mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded' });
     const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
 
-    fireEvent.press(screen.getByText('Like'));
+    await fireEvent.press(screen.getByText('Like'));
 
     expect(mockRecordSwipe).toHaveBeenCalledWith('pool-1', MOVIE_A.id, 'like');
     await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
@@ -272,7 +273,7 @@ describe('SwipeDeck like behavior', () => {
     mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded' });
     const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
 
-    fireEvent.press(screen.getByText('Like'));
+    await fireEvent.press(screen.getByText('Like'));
 
     await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
     expect(screen.queryByText("You're done with this pool.")).toBeNull();
@@ -282,7 +283,7 @@ describe('SwipeDeck like behavior', () => {
     mockRecordSwipe.mockResolvedValueOnce({ status: 'already_recorded' });
     const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
 
-    fireEvent.press(screen.getByText('Like'));
+    await fireEvent.press(screen.getByText('Like'));
 
     await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
     expect(screen.queryByText('Undo')).toBeNull();
@@ -292,7 +293,7 @@ describe('SwipeDeck like behavior', () => {
     mockRecordSwipe.mockRejectedValueOnce(new Error('offline'));
     const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
 
-    fireEvent.press(screen.getByText('Like'));
+    await fireEvent.press(screen.getByText('Like'));
 
     await waitFor(() => expect(screen.getByText('Something went wrong. Try again.')).toBeTruthy());
     expect(screen.getByText('Arrival')).toBeTruthy();
@@ -307,7 +308,7 @@ describe('SwipeDeck conflict statuses', () => {
       mockRecordSwipe.mockResolvedValueOnce({ status });
       const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
 
-      fireEvent.press(screen.getByText('Pass'));
+      await fireEvent.press(screen.getByText('Pass'));
 
       await waitFor(() => expect(screen.getByText('Something went wrong. Try again.')).toBeTruthy());
       expect(screen.getByText('Arrival')).toBeTruthy();
@@ -322,10 +323,10 @@ describe('SwipeDeck undo behavior', () => {
     mockUndoLastPass.mockResolvedValueOnce({ status: 'undone', mediaId: MOVIE_A.id });
     const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
 
-    fireEvent.press(screen.getByText('Pass'));
+    await fireEvent.press(screen.getByText('Pass'));
     await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
 
-    fireEvent.press(screen.getByText('Undo'));
+    await fireEvent.press(screen.getByText('Undo'));
 
     expect(mockUndoLastPass).toHaveBeenCalledWith('pool-1');
     await waitFor(() => expect(screen.getByText('Arrival')).toBeTruthy());
@@ -338,13 +339,13 @@ describe('SwipeDeck undo behavior', () => {
     mockUndoLastPass.mockResolvedValueOnce({ status: 'undone', mediaId: MOVIE_B.id });
     const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B, MOVIE_C]));
 
-    fireEvent.press(screen.getByText('Pass'));
+    await fireEvent.press(screen.getByText('Pass'));
     await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
 
-    fireEvent.press(screen.getByText('Pass'));
+    await fireEvent.press(screen.getByText('Pass'));
     await waitFor(() => expect(screen.getByText('The Matrix')).toBeTruthy());
 
-    fireEvent.press(screen.getByText('Undo'));
+    await fireEvent.press(screen.getByText('Undo'));
 
     await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
     expect(screen.queryByText('Arrival')).toBeNull();
@@ -356,11 +357,11 @@ describe('SwipeDeck undo behavior', () => {
     mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded' });
     const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B, MOVIE_C]));
 
-    fireEvent.press(screen.getByText('Pass'));
+    await fireEvent.press(screen.getByText('Pass'));
     await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
     expect(screen.getByText('Undo')).toBeTruthy();
 
-    fireEvent.press(screen.getByText('Like'));
+    await fireEvent.press(screen.getByText('Like'));
 
     await waitFor(() => expect(screen.getByText('The Matrix')).toBeTruthy());
     expect(screen.queryByText('Undo')).toBeNull();
@@ -395,7 +396,7 @@ describe('SwipeDeck reload behavior', () => {
     expect(screen.getByText('Moonlight')).toBeTruthy();
     expect(screen.getByText('Undo')).toBeTruthy();
 
-    fireEvent.press(screen.getByText('Undo'));
+    await fireEvent.press(screen.getByText('Undo'));
 
     expect(mockUndoLastPass).toHaveBeenCalledWith('pool-1');
     await waitFor(() => expect(screen.getByText('Arrival')).toBeTruthy());
@@ -417,7 +418,7 @@ describe('SwipeDeck exhaustion behavior', () => {
     mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded' });
     const screen = await renderLoadedDeck(deck([MOVIE_A]));
 
-    fireEvent.press(screen.getByText('Like'));
+    await fireEvent.press(screen.getByText('Like'));
 
     await waitFor(() => expect(screen.getByText("You're done with this pool.")).toBeTruthy());
     expect(mockRouterPush).not.toHaveBeenCalled();
@@ -428,7 +429,7 @@ describe('SwipeDeck exhaustion behavior', () => {
     mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded' });
     const screen = await renderLoadedDeck(deck([MOVIE_A]));
 
-    fireEvent.press(screen.getByText('Pass'));
+    await fireEvent.press(screen.getByText('Pass'));
 
     await waitFor(() => expect(screen.getByText("You're done with this pool.")).toBeTruthy());
     expect(mockRouterPush).not.toHaveBeenCalled();
@@ -539,7 +540,7 @@ describe('SwipeDeck gesture behavior', () => {
     mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded' });
     const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
 
-    fireEvent.press(screen.getByText('Like'));
+    await fireEvent.press(screen.getByText('Like'));
 
     expect(mockRecordSwipe).toHaveBeenCalledWith('pool-1', MOVIE_A.id, 'like');
     await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
