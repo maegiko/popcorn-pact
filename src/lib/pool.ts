@@ -205,3 +205,191 @@ export function useLatestActivePool(groupId: string | null) {
 
   return { status, poolId };
 }
+
+/** RPCs declared `returns table` arrive as an array of one row, same as swipe.ts. */
+function firstRow<T>(data: unknown): T | null {
+  if (Array.isArray(data)) return (data[0] as T | undefined) ?? null;
+  return (data as T | null) ?? null;
+}
+
+export type PoolStatus = 'active' | 'completed';
+
+/** Canonical media fields the lifecycle needs to render a winner -- same shape as match.ts's MatchMedia. */
+export type PoolWinnerMedia = {
+  id: string;
+  mediaType: 'movie' | 'tv';
+  title: string;
+  posterUrl: string | null;
+};
+
+export type PoolLifecycle = {
+  poolId: string;
+  status: PoolStatus;
+  createdBy: string | null;
+  plannedFor: string | null;
+  winnerMediaId: string | null;
+  finalizedAt: string | null;
+  winner: PoolWinnerMedia | null;
+};
+
+type PoolLifecycleRow = {
+  id: string;
+  status: PoolStatus;
+  created_by: string | null;
+  planned_for: string | null;
+  winner_media_id: string | null;
+  finalized_at: string | null;
+};
+
+type WinnerMediaRow = {
+  id: string;
+  media_type: 'movie' | 'tv';
+  title: string | null;
+  poster_url: string | null;
+};
+
+async function loadWinnerMedia(mediaId: string): Promise<PoolWinnerMedia | null> {
+  const { data, error } = await supabase
+    .from('media')
+    .select('id, media_type, title, poster_url')
+    .eq('id', mediaId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) return null;
+
+  const media = data as WinnerMediaRow;
+  return {
+    id: media.id,
+    mediaType: media.media_type,
+    title: media.title ?? '',
+    posterUrl: media.poster_url,
+  };
+}
+
+/**
+ * Loads one pool's lifecycle: status, ownership, planned watch time and --
+ * once completed -- the winning title. A direct RLS-backed read, same
+ * discipline as loadLatestActivePool above: the pools policy already scopes
+ * this to the caller's groups, so a pool id outside them resolves to null
+ * rather than an error.
+ */
+export async function loadPoolLifecycle(poolId: string): Promise<PoolLifecycle | null> {
+  const { data, error } = await supabase
+    .from('pools')
+    .select('id, status, created_by, planned_for, winner_media_id, finalized_at')
+    .eq('id', poolId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) return null;
+
+  const row = data as PoolLifecycleRow;
+  const winner = row.winner_media_id ? await loadWinnerMedia(row.winner_media_id) : null;
+
+  return {
+    poolId: row.id,
+    status: row.status,
+    createdBy: row.created_by,
+    plannedFor: row.planned_for,
+    winnerMediaId: row.winner_media_id,
+    finalizedAt: row.finalized_at,
+    winner,
+  };
+}
+
+export type PlannedForStatus =
+  | 'updated'
+  | 'not_creator'
+  | 'not_a_member'
+  | 'pool_not_found'
+  | 'group_in_grace'
+  | 'error';
+
+const PLANNED_FOR_STATUSES = new Set<string>([
+  'updated',
+  'not_creator',
+  'not_a_member',
+  'pool_not_found',
+  'group_in_grace',
+]);
+
+/**
+ * Sets or clears a pool's planned watch time. `plannedFor` of null clears it.
+ * Only the pool's current owner may call this successfully -- see
+ * `not_creator` -- and it may be called again after finalization to
+ * reschedule without touching the winner.
+ */
+export async function setPoolPlannedFor(
+  poolId: string,
+  plannedFor: string | null
+): Promise<{ status: PlannedForStatus }> {
+  const { data, error } = await supabase.rpc('set_pool_planned_for', {
+    p_pool_id: poolId,
+    p_planned_for: plannedFor,
+  });
+  if (error) throw error;
+
+  const row = firstRow<{ status: string }>(data);
+  const status = row?.status;
+  return { status: status && PLANNED_FOR_STATUSES.has(status) ? (status as PlannedForStatus) : 'error' };
+}
+
+export type FinalizePoolStatus =
+  | 'finalized'
+  | 'already_completed'
+  | 'no_matches'
+  | 'not_creator'
+  | 'not_a_member'
+  | 'media_not_matched'
+  | 'group_in_grace'
+  | 'error';
+
+const FINALIZE_POOL_STATUSES = new Set<string>([
+  'finalized',
+  'already_completed',
+  'no_matches',
+  'not_creator',
+  'not_a_member',
+  'media_not_matched',
+  'group_in_grace',
+]);
+
+function toFinalizeResult(data: unknown): { status: FinalizePoolStatus; mediaId: string | null } {
+  const row = firstRow<{ status: string; media_id: string | null }>(data);
+  const status = row?.status;
+  return {
+    status: status && FINALIZE_POOL_STATUSES.has(status) ? (status as FinalizePoolStatus) : 'error',
+    mediaId: row?.media_id ?? null,
+  };
+}
+
+/**
+ * Finalizes a pool on an exact matched title. Only the pool's current owner
+ * may finalize, and finalization is irreversible -- the backend rejects a
+ * second call with `already_completed` rather than re-finalizing.
+ */
+export async function finalizePool(
+  poolId: string,
+  mediaId: string
+): Promise<{ status: FinalizePoolStatus; mediaId: string | null }> {
+  const { data, error } = await supabase.rpc('finalize_pool', {
+    p_pool_id: poolId,
+    p_media_id: mediaId,
+  });
+  if (error) throw error;
+  return toFinalizeResult(data);
+}
+
+/**
+ * Finalizes a pool on a winner the server chooses at random from its
+ * matches. The client never picks -- it only ever reads back whichever
+ * media id the backend returns.
+ */
+export async function finalizePoolRandom(
+  poolId: string
+): Promise<{ status: FinalizePoolStatus; mediaId: string | null }> {
+  const { data, error } = await supabase.rpc('finalize_pool_random', { p_pool_id: poolId });
+  if (error) throw error;
+  return toFinalizeResult(data);
+}
