@@ -41,6 +41,7 @@ export type RecordSwipeStatus =
   | 'invalid_decision'
   | 'group_in_grace'
   | 'group_too_small'
+  | 'pool_completed'
   | 'error';
 
 export type UndoStatus = 'undone' | 'nothing_to_undo' | 'not_a_member' | 'group_in_grace' | 'error';
@@ -55,6 +56,7 @@ const RECORD_SWIPE_STATUSES = new Set<string>([
   'invalid_decision',
   'group_in_grace',
   'group_too_small',
+  'pool_completed',
 ]);
 
 const UNDO_STATUSES = new Set<string>(['undone', 'nothing_to_undo', 'not_a_member', 'group_in_grace']);

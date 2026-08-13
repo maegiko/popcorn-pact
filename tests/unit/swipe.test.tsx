@@ -61,6 +61,18 @@ describe('recordSwipe match surfacing', () => {
 });
 
 describe('recordSwipe status preservation', () => {
+  test('pool_completed is preserved rather than collapsing to error', async () => {
+    mockRpc.mockResolvedValueOnce({
+      data: [{ status: 'pool_completed', match_created: false }],
+      error: null,
+    });
+
+    await expect(recordSwipe('pool-1', 'media-1', 'like')).resolves.toEqual({
+      status: 'pool_completed',
+      matchCreated: false,
+    });
+  });
+
   test('group_too_small is preserved rather than collapsing to error', async () => {
     mockRpc.mockResolvedValueOnce({
       data: [{ status: 'group_too_small', match_created: false }],
