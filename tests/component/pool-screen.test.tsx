@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@testing-library/react-native';
+import { fireEvent, render, waitFor } from '@testing-library/react-native';
 import type { ReactNode } from 'react';
 
 import PoolScreen from '@/app/(authenticated)/pool/[poolId]';
@@ -13,6 +13,18 @@ type MockGroupValue = {
 let mockGroupValue: MockGroupValue;
 let mockSearchParams: Record<string, string | string[] | undefined>;
 const mockRouterPush = jest.fn();
+const mockLoadPoolLifecycle = jest.fn<
+  Promise<{
+    poolId: string;
+    status: 'active' | 'completed';
+    createdBy: string | null;
+    plannedFor: string | null;
+    winnerMediaId: string | null;
+    finalizedAt: string | null;
+    winner: { id: string; mediaType: 'movie' | 'tv'; title: string; posterUrl: string | null } | null;
+  } | null>,
+  [string]
+>();
 
 jest.mock('expo-router', () => ({
   useLocalSearchParams: () => mockSearchParams,
@@ -25,6 +37,10 @@ jest.mock('react-native-safe-area-context', () => ({
 
 jest.mock('@/lib/group', () => ({
   useGroups: () => mockGroupValue,
+}));
+
+jest.mock('@/lib/pool', () => ({
+  loadPoolLifecycle: (...args: [string]) => mockLoadPoolLifecycle(...args),
 }));
 
 // The deck's own loading/posters/swipe/undo behavior is covered by
@@ -62,6 +78,15 @@ beforeEach(() => {
     partner: { userId: 'user-2', displayName: 'Partner', joinedAt: '2026-08-11T00:01:00.000Z' },
   };
   mockSearchParams = { poolId: 'pool-abc' };
+  mockLoadPoolLifecycle.mockResolvedValue({
+    poolId: 'pool-abc',
+    status: 'active',
+    createdBy: 'user-1',
+    plannedFor: null,
+    winnerMediaId: null,
+    finalizedAt: null,
+    winner: null,
+  });
 });
 
 describe('PoolScreen route wiring', () => {
@@ -112,5 +137,56 @@ describe('PoolScreen route wiring', () => {
       pathname: '/pool/[poolId]/matches',
       params: { poolId: 'pool-abc' },
     });
+  });
+
+  test('shows planned watch time summary when the pool has one', async () => {
+    mockLoadPoolLifecycle.mockResolvedValueOnce({
+      poolId: 'pool-abc',
+      status: 'active',
+      createdBy: 'user-1',
+      plannedFor: '2026-08-15T20:30:00.000Z',
+      winnerMediaId: null,
+      finalizedAt: null,
+      winner: null,
+    });
+
+    const screen = await render(<PoolScreen />);
+
+    await waitFor(() => expect(screen.getByText(/planned/i)).toBeTruthy());
+    expect(screen.getByText(/2026|Aug|15|8:30|20:30/i)).toBeTruthy();
+    expect(screen.getByText('SwipeDeck poolId:pool-abc')).toBeTruthy();
+  });
+
+  test('absent planned watch time keeps the pool screen uncluttered', async () => {
+    const screen = await render(<PoolScreen />);
+
+    await waitFor(() => expect(mockLoadPoolLifecycle).toHaveBeenCalledWith('pool-abc'));
+    expect(screen.queryByText(/planned/i)).toBeNull();
+    expect(screen.getByText('SwipeDeck poolId:pool-abc')).toBeTruthy();
+  });
+
+  test('completed pool summary shows winner and no swipe deck action', async () => {
+    mockLoadPoolLifecycle.mockResolvedValueOnce({
+      poolId: 'pool-abc',
+      status: 'completed',
+      createdBy: 'user-1',
+      plannedFor: '2026-08-15T20:30:00.000Z',
+      winnerMediaId: 'media-2',
+      finalizedAt: '2026-08-13T21:00:00.000Z',
+      winner: {
+        id: 'media-2',
+        mediaType: 'movie',
+        title: 'Moonlight',
+        posterUrl: null,
+      },
+    });
+
+    const screen = await render(<PoolScreen />);
+
+    await waitFor(() => expect(screen.getByText(/completed/i)).toBeTruthy());
+    expect(screen.getByText('Moonlight')).toBeTruthy();
+    expect(screen.getByText(/planned/i)).toBeTruthy();
+    expect(screen.queryByText(/^SwipeDeck poolId:/)).toBeNull();
+    expect(screen.getByText('Matches')).toBeTruthy();
   });
 });
