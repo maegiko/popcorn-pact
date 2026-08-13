@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react-native';
+import { fireEvent, render } from '@testing-library/react-native';
 import type { ReactNode } from 'react';
 
 import PoolScreen from '@/app/(authenticated)/pool/[poolId]';
@@ -12,9 +12,11 @@ type MockGroupValue = {
 
 let mockGroupValue: MockGroupValue;
 let mockSearchParams: Record<string, string | string[] | undefined>;
+const mockRouterPush = jest.fn();
 
 jest.mock('expo-router', () => ({
   useLocalSearchParams: () => mockSearchParams,
+  useRouter: () => ({ push: mockRouterPush }),
 }));
 
 jest.mock('react-native-safe-area-context', () => ({
@@ -93,5 +95,22 @@ describe('PoolScreen route wiring', () => {
     const screen = await render(<PoolScreen />);
 
     expect(screen.getByText('SwipeDeck poolId:pool-first')).toBeTruthy();
+  });
+
+  test('exposes a Matches action for the current pool', async () => {
+    const screen = await render(<PoolScreen />);
+
+    expect(screen.getByText('Matches')).toBeTruthy();
+  });
+
+  test('pressing Matches navigates to the pool-specific matches route', async () => {
+    const screen = await render(<PoolScreen />);
+
+    await fireEvent.press(screen.getByText('Matches'));
+
+    expect(mockRouterPush).toHaveBeenCalledWith({
+      pathname: '/pool/[poolId]/matches',
+      params: { poolId: 'pool-abc' },
+    });
   });
 });

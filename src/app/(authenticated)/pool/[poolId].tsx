@@ -1,17 +1,20 @@
-import { useLocalSearchParams } from 'expo-router';
-import { StyleSheet } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Pressable, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { GroupRequired } from '@/components/group-required';
 import { SwipeDeck } from '@/components/swipe-deck';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { MaxContentWidth, Spacing } from '@/constants/theme';
+import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 
 /**
  * Opens an already-existing pool for swiping. This screen owns nothing about
  * the deck itself -- it only resolves `poolId` from the route and hands it to
  * <SwipeDeck />, which is the sole owner of loading, cards and swipe state.
+ * The Matches action is the one thing this screen owns directly, deliberately
+ * kept outside <SwipeDeck /> -- navigating away from the deck is not swipe
+ * business logic.
  *
  * Wrapped in <GroupRequired /> because this is the shared watching experience,
  * matching the same partial gate HomeScreen's swipe surface uses -- the
@@ -27,8 +30,27 @@ export default function PoolScreen() {
 
   return (
     <GroupRequired>
-      <SwipeDeck poolId={normalizedPoolId} />
+      <PoolWithMatches poolId={normalizedPoolId} />
     </GroupRequired>
+  );
+}
+
+function PoolWithMatches({ poolId }: { poolId: string }) {
+  const router = useRouter();
+
+  return (
+    <ThemedView style={styles.container}>
+      <SwipeDeck poolId={poolId} />
+
+      <SafeAreaView edges={['bottom']} style={styles.matchesBar}>
+        <Pressable
+          onPress={() => router.push({ pathname: '/pool/[poolId]/matches', params: { poolId } })}>
+          <ThemedText type="small" themeColor="textSecondary">
+            Matches
+          </ThemedText>
+        </Pressable>
+      </SafeAreaView>
+    </ThemedView>
   );
 }
 
@@ -60,5 +82,10 @@ const styles = StyleSheet.create({
   },
   message: {
     textAlign: 'center',
+  },
+  matchesBar: {
+    paddingBottom: BottomTabInset + Spacing.three,
+    paddingTop: Spacing.two,
+    alignItems: 'center',
   },
 });

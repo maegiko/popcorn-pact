@@ -218,6 +218,13 @@ describe('routing behavior', () => {
     expect(screen.getByText('stack:pair')).toBeTruthy();
   });
 
+  test('/pool/[poolId]/matches is reachable as a pool-specific detail route', async () => {
+    const screen = await render(<AuthenticatedLayout />);
+
+    expect(screen.getByText('stack:pool/[poolId]')).toBeTruthy();
+    expect(screen.getByText('stack:pool/[poolId]/matches')).toBeTruthy();
+  });
+
   test('group-required surfaces show pairing state rather than crashing when no group exists', async () => {
     const screen = await render(
       <GroupRequired>
