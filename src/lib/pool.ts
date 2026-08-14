@@ -397,8 +397,8 @@ export async function finalizePoolRandom(
 /**
  * Canonical media fields Home/history need to render a winner -- same shape
  * as match.ts's MatchMedia and pool.ts's own PoolWinnerMedia, with `overview`
- * added since a dashboard card shows more than a title. Provider identity
- * stops at the boundary that produced this row.
+ * and `releaseYear` added since a dashboard card shows more than a title.
+ * Provider identity stops at the boundary that produced this row.
  */
 export type DashboardMediaWinner = {
   id: string;
@@ -406,6 +406,7 @@ export type DashboardMediaWinner = {
   title: string;
   posterUrl: string | null;
   overview: string | null;
+  releaseYear: number | null;
 };
 
 /** One pool's dashboard-facing summary, shared by Home's preview and the full group history screen. */
@@ -427,29 +428,35 @@ export type DashboardGroup = {
  * The columns both loadHomeGroups and loadGroupPoolHistory read from
  * home_group_pool_dashboard -- one flat, provider-independent view joining a
  * group's pools to their canonical winner media, ranked per group by recency
- * (`home_rank`) so Home's three-pool cap is a `lte` rather than a client-side
- * slice.
+ * (`home_rank`) so Home's three-pool cap is a filter rather than a
+ * client-side slice. A group with no pools yet still gets exactly one row
+ * from the view, with every pool/winner column -- including `home_rank` --
+ * null, which is what `pool_id` being null means below.
  */
 const HOME_DASHBOARD_SELECT =
-  'group_id, group_name, group_joined_at, home_rank, pool_id, pool_status, pool_planned_for, pool_created_at, winner_media_id, winner_media_type, winner_title, winner_poster_url, winner_overview';
+  'group_id, group_name, group_joined_at, home_rank, pool_id, pool_status, pool_planned_for, pool_created_at, winner_media_id, winner_media_type, winner_title, winner_poster_url, winner_overview, winner_release_year';
 
 const HOME_POOLS_PER_GROUP = 3;
 
 type HomeDashboardRow = {
   group_id: string;
   group_name: string;
-  pool_id: string;
-  pool_status: PoolStatus;
+  pool_id: string | null;
+  pool_status: PoolStatus | null;
   pool_planned_for: string | null;
-  pool_created_at: string;
+  pool_created_at: string | null;
   winner_media_id: string | null;
   winner_media_type: 'movie' | 'tv' | null;
   winner_title: string | null;
   winner_poster_url: string | null;
   winner_overview: string | null;
+  winner_release_year: number | null;
 };
 
-function toDashboardPool(row: HomeDashboardRow): DashboardPool {
+/** Null for the empty-group placeholder row -- see HOME_DASHBOARD_SELECT above. */
+function toDashboardPool(row: HomeDashboardRow): DashboardPool | null {
+  if (row.pool_id === null || row.pool_status === null || row.pool_created_at === null) return null;
+
   return {
     id: row.pool_id,
     status: row.pool_status,
@@ -462,12 +469,19 @@ function toDashboardPool(row: HomeDashboardRow): DashboardPool {
           title: row.winner_title ?? '',
           posterUrl: row.winner_poster_url,
           overview: row.winner_overview,
+          releaseYear: row.winner_release_year,
         }
       : null,
   };
 }
 
-/** Folds the view's flat rows into one entry per group, preserving row order for both groups and pools. */
+/**
+ * Folds the view's flat rows into one entry per group, preserving row order
+ * for both groups and pools. Every visible row -- including a group's
+ * pool-less placeholder -- creates or keeps its group; only a row that
+ * actually has a pool contributes one, so a zero-pool group ends up with
+ * `pools: []` rather than one bogus null-shaped entry.
+ */
 function groupDashboardRows(rows: HomeDashboardRow[]): DashboardGroup[] {
   const groups: DashboardGroup[] = [];
   const byGroupId = new Map<string, DashboardGroup>();
@@ -479,7 +493,9 @@ function groupDashboardRows(rows: HomeDashboardRow[]): DashboardGroup[] {
       byGroupId.set(row.group_id, group);
       groups.push(group);
     }
-    group.pools.push(toDashboardPool(row));
+
+    const pool = toDashboardPool(row);
+    if (pool) group.pools.push(pool);
   }
 
   return groups;
@@ -492,12 +508,19 @@ function groupDashboardRows(rows: HomeDashboardRow[]): DashboardGroup[] {
  * rows to the caller's own memberships, so nothing here filters by user.
  * Groups come back oldest-membership-first, matching group.tsx's own
  * ordering convention.
+ *
+ * The cap is `home_rank <= 3 OR home_rank IS NULL` rather than a plain
+ * `lte`: PostgREST's `lte` (like SQL's own `<=`) excludes NULL, and a
+ * zero-pool group's placeholder row carries a NULL home_rank by design (see
+ * the view). A plain `.lte('home_rank', 3)` would silently drop every group
+ * that has no pools yet -- exactly the group Home most needs to show, since
+ * it is the one still offering "Make new pool" with nothing else on screen.
  */
 export async function loadHomeGroups(): Promise<DashboardGroup[]> {
   const { data, error } = await supabase
     .from('home_group_pool_dashboard')
     .select(HOME_DASHBOARD_SELECT)
-    .lte('home_rank', HOME_POOLS_PER_GROUP)
+    .or(`home_rank.lte.${HOME_POOLS_PER_GROUP},home_rank.is.null`)
     .order('group_joined_at', { ascending: true })
     .order('pool_created_at', { ascending: false });
 
@@ -510,7 +533,8 @@ export async function loadHomeGroups(): Promise<DashboardGroup[]> {
  * Loads every pool for one group, newest first, with no cap -- the full
  * history behind Home's three-pool preview. `groupId` is exact: RLS still
  * governs visibility, so a group the caller does not belong to resolves to
- * an empty list rather than an error.
+ * an empty list rather than an error. A pool-less group's single placeholder
+ * row maps to an empty list here too, the same as loadHomeGroups.
  */
 export async function loadGroupPoolHistory(groupId: string): Promise<DashboardPool[]> {
   const { data, error } = await supabase
@@ -521,7 +545,9 @@ export async function loadGroupPoolHistory(groupId: string): Promise<DashboardPo
 
   if (error) throw error;
 
-  return ((data ?? []) as HomeDashboardRow[]).map(toDashboardPool);
+  return ((data ?? []) as HomeDashboardRow[])
+    .map(toDashboardPool)
+    .filter((pool): pool is DashboardPool => pool !== null);
 }
 
 /** Stable identity so consumers do not re-render when the dashboard is empty. */

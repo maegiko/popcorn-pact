@@ -11,6 +11,7 @@ type DashboardPool = {
     title: string;
     posterUrl: string | null;
     overview: string | null;
+    releaseYear: number | null;
   } | null;
 };
 
@@ -26,6 +27,7 @@ type Query = {
   select: jest.Mock<Query, [string]>;
   eq: jest.Mock<Query, [string, string | number]>;
   lte: jest.Mock<Query, [string, number]>;
+  or: jest.Mock<Query, [string]>;
   order: jest.Mock<Promise<QueryResponse> | Query, [string, { ascending: boolean }]>;
 };
 
@@ -39,6 +41,7 @@ const mockFrom = jest.fn((table: string) => {
     select: jest.fn(() => query),
     eq: jest.fn(() => query),
     lte: jest.fn(() => query),
+    or: jest.fn(() => query),
     order: jest.fn((column: string) => {
       if (column === 'pool_created_at') {
         const next = queryResponses.shift();
@@ -98,6 +101,7 @@ function row(overrides: Record<string, unknown> = {}) {
     winner_title: null,
     winner_poster_url: null,
     winner_overview: null,
+    winner_release_year: null,
     ...overrides,
   };
 }
@@ -128,6 +132,7 @@ describe('loadHomeGroups', () => {
             winner_title: 'Arrival',
             winner_poster_url: 'https://cdn.example.test/arrival.jpg',
             winner_overview: 'A linguist meets visitors from elsewhere.',
+            winner_release_year: 2016,
           }),
           row({
             pool_id: 'pool-old-active',
@@ -156,6 +161,7 @@ describe('loadHomeGroups', () => {
               title: 'Arrival',
               posterUrl: 'https://cdn.example.test/arrival.jpg',
               overview: 'A linguist meets visitors from elsewhere.',
+              releaseYear: 2016,
             },
           },
           {
@@ -189,7 +195,32 @@ describe('loadHomeGroups', () => {
     expect(groups[0].pools.map((pool) => pool.id)).toEqual(['a-1', 'a-2', 'a-3']);
     expect(groups[1].pools.map((pool) => pool.id)).toEqual(['b-1']);
     expect(JSON.stringify(groups[0])).not.toContain('b-1');
-    expect(lastQuery?.lte).toHaveBeenCalledWith('home_rank', 3);
+    // Not a plain .lte: PostgREST's lte (like SQL's own <=) excludes NULL,
+    // and a zero-pool group's placeholder row has a NULL home_rank by
+    // design. The OR is what keeps that group from silently vanishing.
+    expect(lastQuery?.or).toHaveBeenCalledWith('home_rank.lte.3,home_rank.is.null');
+  });
+
+  test('a pool-less row folds its group in with an empty pool list, not a null-shaped pool', async () => {
+    queryResponses = [
+      {
+        data: [
+          row({
+            group_id: 'group-solo',
+            group_name: 'Waiting for them',
+            home_rank: null,
+            pool_id: null,
+            pool_status: null,
+            pool_created_at: null,
+          }),
+        ],
+        error: null,
+      },
+    ];
+
+    await expect(loadHomeGroups()).resolves.toEqual([
+      { id: 'group-solo', name: 'Waiting for them', pools: [] },
+    ]);
   });
 
   test('uses a stable direct-read dashboard view with provider-independent winner fields', async () => {
@@ -199,7 +230,7 @@ describe('loadHomeGroups', () => {
 
     expect(mockFrom).toHaveBeenCalledWith('home_group_pool_dashboard');
     expect(lastQuery?.select).toHaveBeenCalledWith(
-      'group_id, group_name, group_joined_at, home_rank, pool_id, pool_status, pool_planned_for, pool_created_at, winner_media_id, winner_media_type, winner_title, winner_poster_url, winner_overview'
+      'group_id, group_name, group_joined_at, home_rank, pool_id, pool_status, pool_planned_for, pool_created_at, winner_media_id, winner_media_type, winner_title, winner_poster_url, winner_overview, winner_release_year'
     );
     expect(lastQuery?.order).toHaveBeenCalledWith('group_joined_at', { ascending: true });
     expect(lastQuery?.order).toHaveBeenCalledWith('pool_created_at', { ascending: false });
@@ -243,6 +274,7 @@ describe('loadGroupPoolHistory', () => {
             winner_title: 'Station Eleven',
             winner_poster_url: null,
             winner_overview: null,
+            winner_release_year: 2024,
           }),
           row({ pool_id: 'active', pool_status: 'active' }),
         ],
@@ -262,6 +294,7 @@ describe('loadGroupPoolHistory', () => {
           title: 'Station Eleven',
           posterUrl: null,
           overview: null,
+          releaseYear: 2024,
         },
       },
       {
@@ -278,6 +311,19 @@ describe('loadGroupPoolHistory', () => {
     queryResponses = [{ data: [], error: null }];
 
     await expect(loadGroupPoolHistory('unknown-or-hidden-group')).resolves.toEqual([]);
+  });
+
+  test('a pool-less group placeholder row maps to an empty list, not a null-shaped pool', async () => {
+    queryResponses = [
+      {
+        data: [
+          row({ home_rank: null, pool_id: null, pool_status: null, pool_created_at: null }),
+        ],
+        error: null,
+      },
+    ];
+
+    await expect(loadGroupPoolHistory('group-1')).resolves.toEqual([]);
   });
 
   test('history read failures are surfaced to the screen boundary', async () => {
