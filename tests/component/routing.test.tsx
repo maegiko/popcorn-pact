@@ -206,13 +206,13 @@ describe('routing behavior', () => {
     expect(screen.getByText('Pair up to start swiping')).toBeTruthy();
   });
 
-  test('/ and /explore still resolve through (tabs)', async () => {
+  test('/ resolves through (tabs), and the removed Explore tab is gone', async () => {
     const screen = await render(<TabsLayout />);
 
     expect(screen.getByText('tab:index')).toBeTruthy();
     expect(screen.getByText('Home')).toBeTruthy();
-    expect(screen.getByText('tab:explore')).toBeTruthy();
-    expect(screen.getByText('Explore')).toBeTruthy();
+    expect(screen.queryByText('tab:explore')).toBeNull();
+    expect(screen.queryByText('Explore')).toBeNull();
   });
 
   test('/pair is reachable outside the tab navigator', async () => {
