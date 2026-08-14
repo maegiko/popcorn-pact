@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react-native';
+import { fireEvent, render } from '@testing-library/react-native';
 import type { ReactNode } from 'react';
 import { Text } from 'react-native';
 
@@ -27,6 +27,7 @@ type MockGroupValue = {
 let mockAuthValue: MockAuthValue;
 let mockGroupValue: MockGroupValue;
 const mockRouterPush = jest.fn();
+const mockRouterReplace = jest.fn();
 
 function MockStackBase({ children }: { children: ReactNode }) {
   return <>{children}</>;
@@ -36,8 +37,25 @@ function MockStackProtected({ guard, children }: { guard: boolean; children: Rea
   return guard ? <>{children}</> : null;
 }
 
-function MockStackScreen({ name }: { name: string; options?: object }) {
-  return <Text>{`stack:${name}`}</Text>;
+/**
+ * Renders enough of a screen's Stack options to assert the navigation contract
+ * without asserting native pixels: whether the route asked for a header at all,
+ * and the header controls it supplies. `headerRight` is invoked so a control
+ * that renders nothing visible fails the same way it would on a device.
+ */
+type MockStackScreenOptions = {
+  headerShown?: boolean;
+  headerRight?: (props: { canGoBack: boolean }) => ReactNode;
+};
+
+function MockStackScreen({ name, options }: { name: string; options?: MockStackScreenOptions }) {
+  return (
+    <>
+      <Text>{`stack:${name}`}</Text>
+      {options?.headerShown ? <Text>{`header:${name}`}</Text> : null}
+      {options?.headerRight?.({ canGoBack: true })}
+    </>
+  );
 }
 
 function MockLink({ children }: { children: ReactNode }) {
@@ -106,7 +124,7 @@ jest.mock('expo-router', () => ({
     Screen: MockStackScreen,
   }),
   ThemeProvider: MockThemeProvider,
-  useRouter: () => ({ push: mockRouterPush }),
+  useRouter: () => ({ push: mockRouterPush, replace: mockRouterReplace }),
 }));
 
 jest.mock('expo-router/unstable-native-tabs', () => ({
@@ -227,6 +245,45 @@ describe('routing behavior', () => {
 
     expect(screen.getByText('stack:pool/[poolId]')).toBeTruthy();
     expect(screen.getByText('stack:pool/[poolId]/matches')).toBeTruthy();
+  });
+
+  test('/pool/[poolId] gets a native Stack header rather than drawing its own', async () => {
+    const screen = await render(<AuthenticatedLayout />);
+
+    expect(screen.getByText('header:pool/[poolId]')).toBeTruthy();
+  });
+
+  test('the pool header exposes an accessible, visibly labeled Home action', async () => {
+    const screen = await render(<AuthenticatedLayout />);
+
+    // Both assertions on purpose: an icon-only control that failed to render
+    // would still satisfy an accessibilityLabel-only check while being
+    // invisible on the device, which is the bug this route's header replaced.
+    expect(screen.getByLabelText('Home')).toBeTruthy();
+    expect(screen.getByText('Home')).toBeTruthy();
+  });
+
+  test('the pool header Home action replaces the stack with the exact Home route', async () => {
+    const screen = await render(<AuthenticatedLayout />);
+
+    await fireEvent.press(screen.getByLabelText('Home'));
+
+    // replace, not push/back: Home is a destination, so pressing back from
+    // Home must not reopen the pool that was just left, and a deep-linked pool
+    // with nothing behind it still has a way out.
+    expect(mockRouterReplace).toHaveBeenCalledWith('/');
+    expect(mockRouterPush).not.toHaveBeenCalled();
+  });
+
+  test('the pool header does not become a tab or leak into the matches route', async () => {
+    const screen = await render(<AuthenticatedLayout />);
+
+    // Matches keeps the stack's default headerless treatment: it draws its own
+    // top spacing and is left by the platform's back affordance, so a second
+    // header (and a second Home control) would be duplicated chrome.
+    expect(screen.queryByText('header:pool/[poolId]/matches')).toBeNull();
+    expect(screen.queryByText('header:(tabs)')).toBeNull();
+    expect(screen.queryByText('tab:pool/[poolId]')).toBeNull();
   });
 
   test('/group/[groupId]/pools is reachable as the full group pool history route', async () => {

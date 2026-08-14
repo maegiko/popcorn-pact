@@ -15,9 +15,13 @@ import { loadPoolLifecycle, type PoolLifecycle } from '@/lib/pool';
  * Opens an already-existing pool for swiping. This screen owns nothing about
  * the deck itself -- it only resolves `poolId` from the route and hands it to
  * <SwipeDeck />, which is the sole owner of loading, cards and swipe state.
- * The Matches action is the one thing this screen owns directly, deliberately
- * kept outside <SwipeDeck /> -- navigating away from the deck is not swipe
- * business logic.
+ *
+ * It owns no top chrome either. The native Stack header configured for this
+ * route in `(authenticated)/_layout.tsx` provides the top safe-area framing
+ * and the Home action, so nothing here reserves a top inset or draws a
+ * navigation control -- two headers competing for the same edge is exactly
+ * what this replaced. Planned watch time is ordinary screen content below that
+ * header rather than header chrome: it is pool metadata, not navigation.
  *
  * Wrapped in <GroupRequired /> because this is the shared watching experience,
  * matching the same partial gate HomeScreen's swipe surface uses -- the
@@ -78,13 +82,11 @@ function PoolWithMatches({ poolId }: { poolId: string }) {
 
   return (
     <ThemedView style={styles.container}>
-      {lifecycle?.plannedFor && (
-        <SafeAreaView edges={['top']} style={styles.plannedBar}>
-          <ThemedText type="small" themeColor="textSecondary">
-            Planned for {formatPlannedFor(lifecycle.plannedFor)}
-          </ThemedText>
-        </SafeAreaView>
-      )}
+      {lifecycle?.plannedFor ? (
+        <ThemedText type="small" themeColor="textSecondary" style={styles.plannedFor}>
+          Planned for {formatPlannedFor(lifecycle.plannedFor)}
+        </ThemedText>
+      ) : null}
 
       {isCompleted ? <CompletedSummary lifecycle={lifecycle} /> : <SwipeDeck poolId={poolId} />}
 
@@ -116,7 +118,12 @@ function CompletedSummary({ lifecycle }: { lifecycle: PoolLifecycle }) {
 function InvalidPool() {
   return (
     <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
+      {/*
+        No 'top' edge here either: this renders below the same native header,
+        which still offers Home -- a broken link is exactly when a way out
+        matters most.
+      */}
+      <SafeAreaView edges={['bottom', 'left', 'right']} style={styles.safeArea}>
         <ThemedText type="subtitle">Pool not found</ThemedText>
         <ThemedText type="small" themeColor="textSecondary" style={styles.message}>
           This link looks broken. Head back and start a new pool.
@@ -142,12 +149,14 @@ const styles = StyleSheet.create({
   message: {
     textAlign: 'center',
   },
+  plannedFor: {
+    alignSelf: 'center',
+    paddingTop: Spacing.three,
+    paddingHorizontal: Spacing.four,
+    textAlign: 'center',
+  },
   matchesBar: {
     paddingBottom: BottomTabInset + Spacing.three,
-    paddingTop: Spacing.two,
-    alignItems: 'center',
-  },
-  plannedBar: {
     paddingTop: Spacing.two,
     alignItems: 'center',
   },

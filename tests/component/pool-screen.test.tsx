@@ -128,6 +128,43 @@ describe('PoolScreen route wiring', () => {
     expect(screen.getByText('Matches')).toBeTruthy();
   });
 
+  // The Home action moved out of this screen and into the native Stack header
+  // configured for the route in `(authenticated)/_layout.tsx`; its visibility
+  // and its replace('/') target are asserted in tests/component/routing.test.tsx.
+  // What this screen still owes is the absence of a competing one -- two
+  // headers fighting for the same edge is what the native header replaced.
+  test('draws no header chrome of its own, in any pool lifecycle state', async () => {
+    const active = await render(<PoolScreen />);
+
+    await waitFor(() => expect(mockLoadPoolLifecycle).toHaveBeenCalledWith('pool-abc'));
+    expect(active.queryByText('Home')).toBeNull();
+    expect(active.queryByLabelText('Home')).toBeNull();
+
+    mockLoadPoolLifecycle.mockResolvedValueOnce({
+      poolId: 'pool-abc',
+      status: 'completed',
+      createdBy: 'user-1',
+      plannedFor: null,
+      winnerMediaId: 'media-2',
+      finalizedAt: '2026-08-13T21:00:00.000Z',
+      winner: { id: 'media-2', mediaType: 'movie', title: 'Moonlight', posterUrl: null },
+    });
+
+    const completed = await render(<PoolScreen />);
+
+    await waitFor(() => expect(completed.getByText(/completed/i)).toBeTruthy());
+    expect(completed.queryByText('Home')).toBeNull();
+  });
+
+  test('a broken pool link still renders its fallback below the route header', async () => {
+    mockSearchParams = {};
+
+    const screen = await render(<PoolScreen />);
+
+    expect(screen.getByText('Pool not found')).toBeTruthy();
+    expect(screen.queryByText('Home')).toBeNull();
+  });
+
   test('pressing Matches navigates to the pool-specific matches route', async () => {
     const screen = await render(<PoolScreen />);
 
@@ -189,4 +226,5 @@ describe('PoolScreen route wiring', () => {
     expect(screen.queryByText(/^SwipeDeck poolId:/)).toBeNull();
     expect(screen.getByText('Matches')).toBeTruthy();
   });
+
 });

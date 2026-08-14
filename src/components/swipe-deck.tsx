@@ -390,7 +390,17 @@ function Card({
 function Shell({ children }: { children?: React.ReactNode }) {
   return (
     <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>{children}</SafeAreaView>
+      {/*
+        No 'top' edge: this deck always renders below the pool route's native
+        Stack header, which the platform has already placed clear of the
+        notch/Dynamic Island. Claiming the top inset again here would reserve
+        that space a second time and push the poster down by a gap the header
+        already accounted for. Bottom/left/right stay, for the Pass/Like/Undo
+        controls near the device's own edges.
+      */}
+      <SafeAreaView edges={['bottom', 'left', 'right']} style={styles.safeArea}>
+        {children}
+      </SafeAreaView>
     </ThemedView>
   );
 }
