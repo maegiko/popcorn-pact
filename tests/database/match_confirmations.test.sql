@@ -57,7 +57,8 @@ returns table (status text, media_id uuid)
 language plpgsql
 as $$
 begin
-  return query execute 'select status, media_id from public.finalize_pool_random($1)';
+  return query execute 'select status, media_id from public.finalize_pool_random($1)'
+  using p_pool_id;
 exception
   when undefined_function then return query select '__missing_function__'::text, null::uuid;
   when insufficient_privilege then return query select '__permission_denied__'::text, null::uuid;
@@ -446,6 +447,12 @@ select * from pg_temp.confirm_match_result(
   '23000000-0000-0000-0000-000000000002'::uuid,
   '83000000-0000-0000-0000-000000000001'::uuid
 );
+-- Snapshotted here rather than read live in the assertion below: the second
+-- confirmation finalizes this pool, and both assertions run after both calls,
+-- so a live read would report the completed state to the test that is about the
+-- state *before* it.
+create temporary table two_state_after_a on commit drop as
+select * from pg_temp.pool_winner_state('23000000-0000-0000-0000-000000000002'::uuid);
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000001302', true);
 create temporary table two_b_confirm on commit drop as
 select * from pg_temp.confirm_match_result(
@@ -456,7 +463,7 @@ reset role;
 
 select ok(
   (select status = 'confirmed' and finalized is false from two_a_confirm)
-  and (select status = 'active' from pg_temp.pool_winner_state('23000000-0000-0000-0000-000000000002'::uuid)),
+  and (select status = 'active' from two_state_after_a),
   'two-member first confirmation does not finalize'
 );
 select ok(
