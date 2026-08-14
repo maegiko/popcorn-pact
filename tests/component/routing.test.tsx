@@ -152,6 +152,10 @@ jest.mock('@/lib/pool', () => ({
     generate: jest.fn(),
     reset: jest.fn(),
   }),
+  useHomeDashboard: () => ({
+    status: 'ready',
+    groups: [],
+  }),
   useLatestActivePool: () => ({
     status: 'none',
     poolId: null,
@@ -223,6 +227,12 @@ describe('routing behavior', () => {
 
     expect(screen.getByText('stack:pool/[poolId]')).toBeTruthy();
     expect(screen.getByText('stack:pool/[poolId]/matches')).toBeTruthy();
+  });
+
+  test('/group/[groupId]/pools is reachable as the full group pool history route', async () => {
+    const screen = await render(<AuthenticatedLayout />);
+
+    expect(screen.getByText('stack:group/[groupId]/pools')).toBeTruthy();
   });
 
   test('group-required surfaces show pairing state rather than crashing when no group exists', async () => {
