@@ -33,6 +33,7 @@ type CanonicalTitle = {
   media_type: string;
   title: string | null;
   release_year: number | null;
+  overview: string | null;
   poster_url: string | null;
   external: Record<string, string>;
 };
@@ -214,7 +215,7 @@ async function canonicalTitles(poolId: string): Promise<CanonicalTitle[]> {
 
   const media = await admin
     .from('media')
-    .select('id, media_type, title, release_year, poster_url')
+    .select('id, media_type, title, release_year, overview, poster_url')
     .in('id', mediaIds);
   if (media.error) throw media.error;
 
@@ -229,6 +230,7 @@ async function canonicalTitles(poolId: string): Promise<CanonicalTitle[]> {
       media_type: row.media_type as string,
       title: (row.title as string | null) ?? null,
       release_year: (row.release_year as number | null) ?? null,
+      overview: (row.overview as string | null) ?? null,
       poster_url: (row.poster_url as string | null) ?? null,
       external: Object.fromEntries(
         (external.data ?? [])
@@ -256,13 +258,55 @@ async function poolCountForGroup(groupId: string): Promise<number> {
 }
 
 describe('generate-pool is independent of any one media provider', () => {
+  test('a TMDB-shaped upstream stores overview as canonical title metadata', async () => {
+    const owner = await createUser('Portability Owner');
+    const groupId = await createGroup(owner);
+    upstream.tmdb.movie = [
+      {
+        id: 101,
+        title: 'A TMDB Film',
+        release_date: '1999-03-31',
+        overview: 'TMDB supplied a portable movie summary.',
+        poster_path: '/posters/101.jpg',
+      },
+    ];
+
+    const result = await invokeGeneratePool(owner, { groupId }, 'tmdb');
+
+    expect(result.status).toBe('created');
+    expect(await canonicalTitles(result.poolId!)).toEqual([
+      {
+        media_type: 'movie',
+        title: 'A TMDB Film',
+        release_year: 1999,
+        overview: 'TMDB supplied a portable movie summary.',
+        poster_url: 'https://image.tmdb.org/t/p/w500/posters/101.jpg',
+        external: { tmdb: '101' },
+      },
+    ]);
+  });
+
   test('a TVDB-shaped upstream produces the same contract as a TMDB-shaped one', async () => {
     const owner = await createUser('Portability Owner');
     const groupId = await createGroup(owner);
     upstream.tvdb.movie = [
-      { id: 1001, name: 'A TVDB Film', year: '1994', image: '/banners/movies/1001.jpg' },
+      {
+        id: 1001,
+        name: 'A TVDB Film',
+        year: '1994',
+        overview: 'TVDB supplied a portable movie summary.',
+        image: '/banners/movies/1001.jpg',
+      },
     ];
-    upstream.tvdb.tv = [{ id: 2002, name: 'A TVDB Series', year: '2016', image: null }];
+    upstream.tvdb.tv = [
+      {
+        id: 2002,
+        name: 'A TVDB Series',
+        year: '2016',
+        overview: 'TVDB supplied a portable series summary.',
+        image: null,
+      },
+    ];
 
     const result = await invokeGeneratePool(owner, { groupId }, 'tvdb');
 
@@ -273,6 +317,7 @@ describe('generate-pool is independent of any one media provider', () => {
         media_type: 'movie',
         title: 'A TVDB Film',
         release_year: 1994,
+        overview: 'TVDB supplied a portable movie summary.',
         // A bare provider path is resolved against that provider's image host,
         // so what the app reads is always a usable URL.
         poster_url: 'https://artworks.thetvdb.com/banners/movies/1001.jpg',
@@ -282,6 +327,7 @@ describe('generate-pool is independent of any one media provider', () => {
         media_type: 'tv',
         title: 'A TVDB Series',
         release_year: 2016,
+        overview: 'TVDB supplied a portable series summary.',
         poster_url: null,
         external: { tvdb: '2002' },
       },
@@ -297,6 +343,7 @@ describe('generate-pool is independent of any one media provider', () => {
         showType: 'movie',
         title: 'An Available Film',
         releaseYear: 2001,
+        overview: 'Streaming Availability supplied a portable movie summary.',
         imdbId: 'tt3003',
         // Namespaced by this API, and unwrapped so it matches what TMDB writes.
         tmdbId: 'movie/3003',
@@ -312,6 +359,7 @@ describe('generate-pool is independent of any one media provider', () => {
         media_type: 'movie',
         title: 'An Available Film',
         release_year: 2001,
+        overview: 'Streaming Availability supplied a portable movie summary.',
         poster_url: 'https://cdn.example.test/p/3003.jpg',
         external: { 'streaming-availability': 'sa-3003', imdb: 'tt3003', tmdb: '3003' },
       },
@@ -389,6 +437,7 @@ describe('generate-pool is independent of any one media provider', () => {
         media_type: 'movie',
         title: 'Nine Hundred The Film',
         release_year: null,
+        overview: null,
         poster_url: null,
         external: { tvdb: '900' },
       },
@@ -396,6 +445,7 @@ describe('generate-pool is independent of any one media provider', () => {
         media_type: 'tv',
         title: 'Nine Hundred The Series',
         release_year: null,
+        overview: null,
         poster_url: null,
         external: { tvdb: '900' },
       },

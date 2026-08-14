@@ -16,7 +16,14 @@ create extension if not exists pgtap with schema extensions;
 
 begin;
 
-select plan(14);
+select plan(16);
+
+select has_column(
+  'public',
+  'media',
+  'overview',
+  'canonical media stores provider-independent overview metadata'
+);
 
 insert into auth.users (
   id,
@@ -127,6 +134,7 @@ select public.upsert_media($${
   "media_type": "movie",
   "title": "Provider A Movie 42",
   "release_year": 1999,
+  "overview": "Provider-independent summary from the resolving provider.",
   "external_ids": { "pgtap-c": "tt0000042", "pgtap-b": "77" }
 }$$::jsonb) as media_id;
 
@@ -145,6 +153,16 @@ select ok(
       and mei.external_id = '77'
   ),
   'resolving a record learns the mappings it carried that we did not have'
+);
+
+select is(
+  (
+    select m.overview
+    from public.media as m
+    where m.id = (select media_id from recognised)
+  ),
+  'Provider-independent summary from the resolving provider.',
+  'upsert_media stores overview on the canonical media row'
 );
 
 create temporary table unrecognised on commit drop as
