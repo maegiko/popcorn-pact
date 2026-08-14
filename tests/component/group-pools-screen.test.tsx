@@ -13,6 +13,7 @@ type HistoryPool = {
     title: string;
     posterUrl: string | null;
     overview: string | null;
+    releaseYear: number | null;
   } | null;
 };
 
@@ -67,6 +68,7 @@ function completedPool(overrides: Partial<HistoryPool> = {}): HistoryPool {
       title: 'Arrival',
       posterUrl: 'https://cdn.example.test/arrival.jpg',
       overview: 'A linguist meets visitors from elsewhere.',
+      releaseYear: 2016,
     },
     ...overrides,
   });
@@ -111,7 +113,7 @@ describe('GroupPoolsScreen route states', () => {
 
     const screen = await renderHistory();
 
-    await waitFor(() => expect(screen.getByText('pool-first')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('pool-card-pool-first')).toBeTruthy());
     expect(mockLoadGroupPoolHistory).toHaveBeenCalledWith('group-first');
   });
 
@@ -152,15 +154,22 @@ describe('GroupPoolsScreen pool list', () => {
       completedPool({ id: 'pool-4', createdAt: '2026-08-14T14:00:00.000Z' }),
       pool({ id: 'pool-3', createdAt: '2026-08-14T13:00:00.000Z' }),
       pool({ id: 'pool-2', createdAt: '2026-08-14T12:00:00.000Z' }),
-      completedPool({ id: 'pool-1', createdAt: '2026-08-14T11:00:00.000Z', winner: { id: 'media-2', mediaType: 'tv', title: 'Station Eleven', posterUrl: null, overview: null } }),
+      completedPool({
+        id: 'pool-1',
+        createdAt: '2026-08-14T11:00:00.000Z',
+        winner: { id: 'media-2', mediaType: 'tv', title: 'Station Eleven', posterUrl: null, overview: null, releaseYear: null },
+      }),
     ]);
 
     const screen = await renderHistory();
 
-    await waitFor(() => expect(screen.getByText('pool-4')).toBeTruthy());
-    expect(screen.getByText('pool-3')).toBeTruthy();
-    expect(screen.getByText('pool-2')).toBeTruthy();
-    expect(screen.getByText('pool-1')).toBeTruthy();
+    // Cards no longer render the pool id as visible text (it read like a
+    // detail page, not a dashboard card), so presence is checked via the
+    // card's testID instead.
+    await waitFor(() => expect(screen.getByTestId('pool-card-pool-4')).toBeTruthy());
+    expect(screen.getByTestId('pool-card-pool-3')).toBeTruthy();
+    expect(screen.getByTestId('pool-card-pool-2')).toBeTruthy();
+    expect(screen.getByTestId('pool-card-pool-1')).toBeTruthy();
   });
 
   test('active pool card has Continue swiping and no winner metadata', async () => {
@@ -170,7 +179,7 @@ describe('GroupPoolsScreen pool list', () => {
 
     const screen = await renderHistory();
 
-    await waitFor(() => expect(screen.getByText('active-pool')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('pool-card-active-pool')).toBeTruthy());
     expect(screen.getByText('Continue swiping')).toBeTruthy();
     expect(screen.getByText(/2026|Aug|15|8:30|20:30/i)).toBeTruthy();
     expect(screen.queryByText(/linguist/i)).toBeNull();
@@ -182,22 +191,33 @@ describe('GroupPoolsScreen pool list', () => {
     const screen = await renderHistory();
 
     await waitFor(() => expect(screen.getByText('Arrival')).toBeTruthy());
+    expect(screen.getByText('Movie • 2016')).toBeTruthy();
     expect(screen.getByText('A linguist meets visitors from elsewhere.')).toBeTruthy();
     expect(screen.getByLabelText('Poster for Arrival')).toBeTruthy();
     expect(screen.queryByText('Continue swiping')).toBeNull();
     expect(screen.queryByText('Matches')).toBeNull();
   });
 
-  test('nullable overview and poster render safely without provider-specific copy', async () => {
+  test('nullable overview, poster, and release year render safely without provider-specific copy', async () => {
     mockLoadGroupPoolHistory.mockResolvedValueOnce([
       completedPool({
-        winner: { id: 'media-3', mediaType: 'movie', title: 'Moonlight', posterUrl: null, overview: null },
+        winner: {
+          id: 'media-3',
+          mediaType: 'movie',
+          title: 'Moonlight',
+          posterUrl: null,
+          overview: null,
+          releaseYear: null,
+        },
       }),
     ]);
 
     const screen = await renderHistory();
 
     await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
+    // No year to show, but the media type alone is not a fake year.
+    expect(screen.getByText('Movie')).toBeTruthy();
+    expect(screen.queryByLabelText(/poster/i)).toBeNull();
     expect(screen.queryByText(/tvdb|tmdb|streaming availability|synopsis|description/i)).toBeNull();
   });
 
@@ -205,9 +225,9 @@ describe('GroupPoolsScreen pool list', () => {
     mockLoadGroupPoolHistory.mockResolvedValueOnce([pool({ id: 'active-pool' })]);
 
     const screen = await renderHistory();
-    await waitFor(() => expect(screen.getByText('active-pool')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('pool-card-active-pool')).toBeTruthy());
 
-    await fireEvent.press(screen.getByText('active-pool'));
+    await fireEvent.press(screen.getByTestId('pool-card-active-pool'));
     await fireEvent.press(screen.getByText('Continue swiping'));
 
     expect(mockRouterPush).toHaveBeenNthCalledWith(1, {

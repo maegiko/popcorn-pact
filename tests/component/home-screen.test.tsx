@@ -16,6 +16,7 @@ type DashboardPool = {
     title: string;
     posterUrl: string | null;
     overview: string | null;
+    releaseYear: number | null;
   } | null;
 };
 
@@ -122,6 +123,7 @@ function completedPool(overrides: Partial<DashboardPool> = {}): DashboardPool {
       title: 'Arrival',
       posterUrl: 'https://cdn.example.test/arrival.jpg',
       overview: 'A linguist meets visitors from elsewhere.',
+      releaseYear: 2016,
     },
     ...overrides,
   });
@@ -232,10 +234,13 @@ describe('HomeScreen group dashboard', () => {
 
     const screen = await render(<HomeScreen />);
 
-    expect(screen.getByText('pool-4')).toBeTruthy();
-    expect(screen.getByText('pool-3')).toBeTruthy();
+    // Cards no longer render the pool id as visible text (it read like a
+    // detail page, not a dashboard card), so presence/absence is checked via
+    // the card's testID instead.
+    expect(screen.getByTestId('pool-card-pool-4')).toBeTruthy();
+    expect(screen.getByTestId('pool-card-pool-3')).toBeTruthy();
     expect(screen.getByText('Arrival')).toBeTruthy();
-    expect(screen.queryByText('pool-1')).toBeNull();
+    expect(screen.queryByTestId('pool-card-pool-1')).toBeNull();
   });
 
   test('Make new pool exists at group level even when active pools already exist', async () => {
@@ -269,8 +274,8 @@ describe('HomeScreen group dashboard', () => {
 
     const screen = await render(<HomeScreen />);
 
-    expect(screen.getByText('pool-new')).toBeTruthy();
-    expect(screen.getByText('active-a')).toBeTruthy();
+    expect(screen.getByTestId('pool-card-pool-new')).toBeTruthy();
+    expect(screen.getByTestId('pool-card-active-a')).toBeTruthy();
     expect(screen.getAllByText('Continue swiping')).toHaveLength(2);
   });
 });
@@ -300,7 +305,7 @@ describe('HomeScreen pool cards', () => {
     mockDashboard = { status: 'ready', groups: [dashboardGroup({ pools: [pool({ id: 'pool-active' })] })] };
 
     const screen = await render(<HomeScreen />);
-    await fireEvent.press(screen.getByText('pool-active'));
+    await fireEvent.press(screen.getByTestId('pool-card-pool-active'));
     await fireEvent.press(screen.getByText('Continue swiping'));
 
     expect(mockRouterPush).toHaveBeenNthCalledWith(1, {
@@ -326,6 +331,7 @@ describe('HomeScreen pool cards', () => {
     const screen = await render(<HomeScreen />);
 
     expect(screen.getByText('Arrival')).toBeTruthy();
+    expect(screen.getByText('Movie • 2016')).toBeTruthy();
     expect(screen.getByText('A linguist meets visitors from elsewhere.')).toBeTruthy();
     expect(screen.getByLabelText('Poster for Arrival')).toBeTruthy();
     expect(screen.getByText(/2026|Aug|15|8:30|20:30/i)).toBeTruthy();
@@ -333,12 +339,23 @@ describe('HomeScreen pool cards', () => {
     expect(screen.queryByText('Matches')).toBeNull();
   });
 
-  test('completed pool with nullable canonical overview renders safely without provider-specific fallback', async () => {
+  test('completed pool with nullable canonical overview/poster/year renders safely without provider-specific fallback', async () => {
     mockDashboard = {
       status: 'ready',
       groups: [
         dashboardGroup({
-          pools: [completedPool({ winner: { id: 'media-2', mediaType: 'tv', title: 'Station Eleven', posterUrl: null, overview: null } })],
+          pools: [
+            completedPool({
+              winner: {
+                id: 'media-2',
+                mediaType: 'tv',
+                title: 'Station Eleven',
+                posterUrl: null,
+                overview: null,
+                releaseYear: null,
+              },
+            }),
+          ],
         }),
       ],
     };
@@ -346,6 +363,9 @@ describe('HomeScreen pool cards', () => {
     const screen = await render(<HomeScreen />);
 
     expect(screen.getByText('Station Eleven')).toBeTruthy();
+    // No year to show, but the media type alone is not a fake year.
+    expect(screen.getByText('TV')).toBeTruthy();
+    expect(screen.queryByLabelText(/poster/i)).toBeNull();
     expect(screen.queryByText(/tvdb|tmdb|streaming availability|synopsis|description/i)).toBeNull();
   });
 
