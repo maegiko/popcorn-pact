@@ -8,6 +8,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { confirmMatch } from '@/lib/match';
 import { loadPoolDeck, recordSwipe, undoLastPass, type MediaRecord } from '@/lib/swipe';
 import { resolveSwipeGesture, SWIPE_DECISION_THRESHOLD } from '@/lib/swipe-gesture';
 
@@ -26,6 +27,19 @@ type DeckState =
   | { phase: 'error' }
   | { phase: 'ready'; queue: MediaRecord[]; byId: Map<string, MediaRecord> };
 
+/**
+ * The match moment's own lifecycle, independent of the deck above it.
+ * `shown` covers both the freshly-created moment and a failed confirmation
+ * attempt -- the moment stays up either way, which is why there is no
+ * separate error phase. `finalized` replaces the moment (and the deck's own
+ * card) with the winner state once this user's confirmation completed the
+ * group's agreement.
+ */
+type MatchState =
+  | { phase: 'none' }
+  | { phase: 'shown'; media: MediaRecord; pending: boolean }
+  | { phase: 'finalized'; media: MediaRecord };
+
 export function SwipeDeck({ poolId }: { poolId: string }) {
   const [deck, setDeck] = useState<DeckState>({ phase: 'loading' });
   const [pending, setPending] = useState(false);
@@ -34,10 +48,11 @@ export function SwipeDeck({ poolId }: { poolId: string }) {
   // backend's `undoable` flag, which moves to whichever pass was made most
   // recently and is cleared by any further decision.
   const [undoableId, setUndoableId] = useState<string | null>(null);
-  // Whether the like just recorded completed the group's agreement. A
-  // dismissible moment layered over the (already-advanced) deck, never a
+  // A dismissible moment layered over the (already-advanced) deck, never a
   // detour from it -- matching is independent of the pool's own lifecycle.
-  const [showMatch, setShowMatch] = useState(false);
+  // `media` is captured from the exact card that matched, not derived from
+  // deck.queue[0], so the moment keeps its identity after the deck advances.
+  const [matchState, setMatchState] = useState<MatchState>({ phase: 'none' });
 
   useEffect(() => {
     let cancelled = false;
@@ -57,7 +72,7 @@ export function SwipeDeck({ poolId }: { poolId: string }) {
         setDeck({ phase: 'ready', queue, byId });
         setError(null);
         setUndoableId(persistedUndoable);
-        setShowMatch(false);
+        setMatchState({ phase: 'none' });
       })
       .catch(() => {
         if (!cancelled) setDeck({ phase: 'error' });
@@ -78,7 +93,7 @@ export function SwipeDeck({ poolId }: { poolId: string }) {
     // Cleared up front, not just on dismissal: a match moment belongs to the
     // decision that earned it, and starting a new one -- whatever it turns
     // out to be -- must not leave a stale banner from the last card behind.
-    setShowMatch(false);
+    setMatchState({ phase: 'none' });
 
     try {
       const result = await recordSwipe(poolId, current.id, decision);
@@ -90,8 +105,10 @@ export function SwipeDeck({ poolId }: { poolId: string }) {
         setUndoableId(decision === 'pass' ? current.id : null);
         // Only a brand-new recorded like can complete the group's agreement --
         // a duplicate has nothing new to complete, and a pass never matches.
+        // `current` -- not deck.queue[0] -- is what the moment tracks, since
+        // the deck above has already advanced past it by the time this runs.
         if (decision === 'like' && result.status === 'recorded' && result.matchCreated) {
-          setShowMatch(true);
+          setMatchState({ phase: 'shown', media: current, pending: false });
         }
       } else {
         setError(ERROR_MESSAGE);
@@ -100,6 +117,50 @@ export function SwipeDeck({ poolId }: { poolId: string }) {
       setError(ERROR_MESSAGE);
     } finally {
       setPending(false);
+    }
+  }
+
+  function handleDismissMatch() {
+    if (matchState.phase !== 'shown' || matchState.pending) return;
+    setMatchState({ phase: 'none' });
+  }
+
+  /**
+   * Confirms the exact matched title the moment was shown for -- never
+   * whatever the deck currently has queued. finalized=true is the only
+   * outcome that replaces the moment with the winner state; every other
+   * successful outcome (confirmed or the idempotent already_confirmed) just
+   * dismisses the moment and leaves the deck exactly as it was.
+   */
+  async function handleConfirm() {
+    if (matchState.phase !== 'shown' || matchState.pending) return;
+    const media = matchState.media;
+
+    setMatchState({ phase: 'shown', media, pending: true });
+    setError(null);
+
+    try {
+      const result = await confirmMatch(poolId, media.id);
+
+      if (result.status === 'confirmed' || result.status === 'already_confirmed') {
+        if (result.finalized) {
+          // The winner is looked up by the backend's own media id rather than
+          // assumed to be `media` -- it always will be for this call, but the
+          // lookup is what keeps that a fact about confirm_match rather than
+          // something this component invents.
+          const winnerId = result.mediaId ?? media.id;
+          const winner = (deck.phase === 'ready' ? deck.byId.get(winnerId) : undefined) ?? media;
+          setMatchState({ phase: 'finalized', media: winner });
+        } else {
+          setMatchState({ phase: 'none' });
+        }
+      } else {
+        setError(ERROR_MESSAGE);
+        setMatchState({ phase: 'shown', media, pending: false });
+      }
+    } catch {
+      setError(ERROR_MESSAGE);
+      setMatchState({ phase: 'shown', media, pending: false });
     }
   }
 
@@ -149,7 +210,9 @@ export function SwipeDeck({ poolId }: { poolId: string }) {
 
   return (
     <Shell>
-      {current ? (
+      {matchState.phase === 'finalized' ? (
+        <MatchFinalized media={matchState.media} />
+      ) : current ? (
         <Card
           media={current}
           pending={pending}
@@ -163,18 +226,33 @@ export function SwipeDeck({ poolId }: { poolId: string }) {
         <ThemedText type="subtitle">You&apos;re done with this pool.</ThemedText>
       )}
 
-      {showMatch && <MatchMoment onDismiss={() => setShowMatch(false)} />}
+      {matchState.phase === 'shown' && (
+        <MatchMoment
+          pending={matchState.pending}
+          onConfirm={handleConfirm}
+          onDismiss={handleDismissMatch}
+        />
+      )}
     </Shell>
   );
 }
 
 /**
  * A lightweight, dismissible layer over the deck -- not a replacement for it.
- * The deck has already advanced by the time this shows, and dismissing it is
- * the only thing it does: no watched state, no pool completion, nothing that
- * touches the pool's own lifecycle.
+ * The deck has already advanced by the time this shows. "I want to watch
+ * this!" is the primary CTA (a personal, non-finalizing commitment toward
+ * the group's unanimity); "Keep swiping" only dismisses the moment and never
+ * calls confirmMatch.
  */
-function MatchMoment({ onDismiss }: { onDismiss: () => void }) {
+function MatchMoment({
+  pending,
+  onConfirm,
+  onDismiss,
+}: {
+  pending: boolean;
+  onConfirm: () => void;
+  onDismiss: () => void;
+}) {
   const theme = useTheme();
 
   return (
@@ -182,10 +260,39 @@ function MatchMoment({ onDismiss }: { onDismiss: () => void }) {
       <ThemedText type="smallBold">It&apos;s a match!</ThemedText>
 
       <Pressable
-        onPress={onDismiss}
-        style={[styles.matchDismissButton, { backgroundColor: theme.backgroundSelected }]}>
-        <ThemedText type="smallBold">Keep swiping</ThemedText>
+        accessibilityRole="button"
+        onPress={onConfirm}
+        disabled={pending}
+        style={[
+          styles.matchConfirmButton,
+          { backgroundColor: theme.backgroundSelected, opacity: pending ? 0.5 : 1 },
+        ]}>
+        <ThemedText type="smallBold">I want to watch this!</ThemedText>
       </Pressable>
+
+      <Pressable onPress={onDismiss} disabled={pending} style={styles.matchDismissButton}>
+        <ThemedText type="small" themeColor="textSecondary">
+          Keep swiping
+        </ThemedText>
+      </Pressable>
+    </ThemedView>
+  );
+}
+
+/**
+ * Replaces the deck entirely -- no Pass/Like, no next card -- once this
+ * user's confirmation completed the group's unanimity. Not a push
+ * notification, just an immediate in-app acknowledgement that the pool is
+ * settled.
+ */
+function MatchFinalized({ media }: { media: MediaRecord }) {
+  return (
+    <ThemedView type="backgroundElement" style={styles.matchMoment}>
+      <ThemedText type="smallBold">It&apos;s final -- everyone confirmed!</ThemedText>
+      <ThemedText type="subtitle">{media.title}</ThemedText>
+      <ThemedText type="small" themeColor="textSecondary">
+        This pool is settled. Enjoy the movie.
+      </ThemedText>
     </ThemedView>
   );
 }
@@ -332,10 +439,14 @@ const styles = StyleSheet.create({
     gap: Spacing.two,
     alignItems: 'center',
   },
-  matchDismissButton: {
+  matchConfirmButton: {
+    width: '100%',
     borderRadius: Spacing.two,
     paddingVertical: Spacing.three,
     paddingHorizontal: Spacing.four,
+    alignItems: 'center',
+  },
+  matchDismissButton: {
     alignItems: 'center',
   },
 });
