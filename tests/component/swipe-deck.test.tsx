@@ -33,6 +33,14 @@ type RecordSwipeStatus =
   | 'error';
 
 type UndoStatus = 'undone' | 'nothing_to_undo' | 'not_a_member' | 'group_in_grace' | 'error';
+type ConfirmMatchStatus =
+  | 'confirmed'
+  | 'already_confirmed'
+  | 'pool_completed'
+  | 'not_a_member'
+  | 'match_not_found'
+  | 'group_in_grace'
+  | 'error';
 
 type SwipeDeckProps = { poolId: string };
 
@@ -42,11 +50,19 @@ const mockRecordSwipe = jest.fn<
   [string, string, 'like' | 'pass']
 >();
 const mockUndoLastPass = jest.fn<Promise<{ status: UndoStatus; mediaId: string | null }>, [string]>();
+const mockConfirmMatch = jest.fn<
+  Promise<{ status: ConfirmMatchStatus; finalized: boolean; mediaId: string | null }>,
+  [string, string]
+>();
 
 jest.mock('../../src/lib/swipe', () => ({
   loadPoolDeck: (...args: [string]) => mockLoadPoolDeck(...args),
   recordSwipe: (...args: [string, string, 'like' | 'pass']) => mockRecordSwipe(...args),
   undoLastPass: (...args: [string]) => mockUndoLastPass(...args),
+}));
+
+jest.mock('../../src/lib/match', () => ({
+  confirmMatch: (...args: [string, string]) => mockConfirmMatch(...args),
 }));
 
 const mockRouterPush = jest.fn();
@@ -152,6 +168,7 @@ beforeEach(() => {
   mockLoadPoolDeck.mockReset();
   mockRecordSwipe.mockReset();
   mockUndoLastPass.mockReset();
+  mockConfirmMatch.mockReset();
   mockRouterPush.mockClear();
   mockRouterReplace.mockClear();
 });
@@ -306,7 +323,7 @@ describe('SwipeDeck like behavior', () => {
 });
 
 describe('SwipeDeck match moment behavior', () => {
-  test('a match-creating like advances the deck and shows a dismissible match moment', async () => {
+  test('a match-creating like advances the deck and shows confirmation and keep-swiping actions', async () => {
     mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded', matchCreated: true });
     const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
 
@@ -314,11 +331,78 @@ describe('SwipeDeck match moment behavior', () => {
 
     await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
     expect(screen.getByText("It's a match!")).toBeTruthy();
+    expect(screen.getByText('I want to watch this!')).toBeTruthy();
     expect(screen.queryByText("You're done with this pool.")).toBeNull();
 
     await fireEvent.press(screen.getByText('Keep swiping'));
 
     expect(screen.queryByText("It's a match!")).toBeNull();
+    expect(screen.getByText('Moonlight')).toBeTruthy();
+  });
+
+  test('the confirmation action is the primary match CTA and targets the matched media id', async () => {
+    mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded', matchCreated: true });
+    mockConfirmMatch.mockResolvedValueOnce({ status: 'confirmed', finalized: false, mediaId: null });
+    const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
+
+    await fireEvent.press(screen.getByText('Like'));
+    await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
+
+    const primary = screen.getByText('I want to watch this!');
+    expect(primary.props.accessibilityRole ?? primary.parent?.props.accessibilityRole).toBe('button');
+
+    await fireEvent.press(primary);
+
+    expect(mockConfirmMatch).toHaveBeenCalledWith('pool-1', MOVIE_A.id);
+    expect(mockConfirmMatch).not.toHaveBeenCalledWith('pool-1', MOVIE_B.id);
+    await waitFor(() => expect(screen.queryByText("It's a match!")).toBeNull());
+    expect(screen.getByText('Moonlight')).toBeTruthy();
+  });
+
+  test('a non-unanimous successful confirmation dismisses the match moment and keeps the deck usable', async () => {
+    mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded', matchCreated: true });
+    mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded', matchCreated: false });
+    mockConfirmMatch.mockResolvedValueOnce({ status: 'confirmed', finalized: false, mediaId: null });
+    const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B, MOVIE_C]));
+
+    await fireEvent.press(screen.getByText('Like'));
+    await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
+    await fireEvent.press(screen.getByText('I want to watch this!'));
+
+    await waitFor(() => expect(screen.queryByText("It's a match!")).toBeNull());
+    await fireEvent.press(screen.getByText('Like'));
+
+    expect(mockRecordSwipe).toHaveBeenCalledWith('pool-1', MOVIE_B.id, 'like');
+    await waitFor(() => expect(screen.getByText('The Matrix')).toBeTruthy());
+  });
+
+  test('a unanimous confirmation shows the final winner and stops actionable swiping', async () => {
+    mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded', matchCreated: true });
+    mockConfirmMatch.mockResolvedValueOnce({ status: 'confirmed', finalized: true, mediaId: MOVIE_A.id });
+    const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
+
+    await fireEvent.press(screen.getByText('Like'));
+    await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
+    await fireEvent.press(screen.getByText('I want to watch this!'));
+
+    await waitFor(() => expect(screen.getByText(/final|winner|tonight/i)).toBeTruthy());
+    expect(screen.getByText('Arrival')).toBeTruthy();
+    expect(screen.queryByText('Pass')).toBeNull();
+    expect(screen.queryByText('Like')).toBeNull();
+  });
+
+  test('confirmation failure does not falsely finalize the pool or lose the match moment', async () => {
+    mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded', matchCreated: true });
+    mockConfirmMatch.mockResolvedValueOnce({ status: 'match_not_found', finalized: false, mediaId: null });
+    const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B]));
+
+    await fireEvent.press(screen.getByText('Like'));
+    await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
+    await fireEvent.press(screen.getByText('I want to watch this!'));
+
+    await waitFor(() => expect(screen.getByText('Something went wrong. Try again.')).toBeTruthy());
+    expect(screen.getByText("It's a match!")).toBeTruthy();
+    expect(screen.queryByText(/final|winner|tonight/i)).toBeNull();
     expect(screen.getByText('Moonlight')).toBeTruthy();
   });
 
@@ -372,6 +456,26 @@ describe('SwipeDeck match moment behavior', () => {
     await fireEvent.press(screen.getByText('Like'));
     await waitFor(() => expect(screen.getByText('The Matrix')).toBeTruthy());
     expect(screen.getByText("It's a match!")).toBeTruthy();
+  });
+
+  test('later separate matches retain their own confirmation identity', async () => {
+    mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded', matchCreated: true });
+    mockRecordSwipe.mockResolvedValueOnce({ status: 'recorded', matchCreated: true });
+    mockConfirmMatch.mockResolvedValueOnce({ status: 'confirmed', finalized: false, mediaId: null });
+    mockConfirmMatch.mockResolvedValueOnce({ status: 'confirmed', finalized: false, mediaId: null });
+    const screen = await renderLoadedDeck(deck([MOVIE_A, MOVIE_B, MOVIE_C]));
+
+    await fireEvent.press(screen.getByText('Like'));
+    await waitFor(() => expect(screen.getByText('Moonlight')).toBeTruthy());
+    await fireEvent.press(screen.getByText('I want to watch this!'));
+
+    await waitFor(() => expect(screen.queryByText("It's a match!")).toBeNull());
+    await fireEvent.press(screen.getByText('Like'));
+    await waitFor(() => expect(screen.getByText('The Matrix')).toBeTruthy());
+    await fireEvent.press(screen.getByText('I want to watch this!'));
+
+    expect(mockConfirmMatch).toHaveBeenNthCalledWith(1, 'pool-1', MOVIE_A.id);
+    expect(mockConfirmMatch).toHaveBeenNthCalledWith(2, 'pool-1', MOVIE_B.id);
   });
 });
 
