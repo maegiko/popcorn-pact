@@ -10,7 +10,7 @@ import { MaxContentWidth, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useSession } from '@/lib/auth';
 import { defaultPlannedTime, formatPlannedFor } from '@/lib/format';
-import { loadPoolMatches, type PoolMatch } from '@/lib/match';
+import { confirmMatch, loadMyMatchConfirmations, loadPoolMatches, type PoolMatch } from '@/lib/match';
 import {
   finalizePool,
   finalizePoolRandom,
@@ -47,7 +47,15 @@ export default function MatchesScreen() {
 
 type ScreenResult =
   | { poolId: string; phase: 'error' }
-  | { poolId: string; phase: 'ready'; matches: PoolMatch[]; lifecycle: PoolLifecycle | null };
+  | {
+      poolId: string;
+      phase: 'ready';
+      matches: PoolMatch[];
+      lifecycle: PoolLifecycle | null;
+      confirmedIds: Set<string>;
+      pendingConfirmIds: Set<string>;
+      confirmErrorId: string | null;
+    };
 
 function MatchesList({ poolId, userId }: { poolId: string; userId: string | null }) {
   const [result, setResult] = useState<ScreenResult | null>(null);
@@ -55,9 +63,19 @@ function MatchesList({ poolId, userId }: { poolId: string; userId: string | null
   useEffect(() => {
     let cancelled = false;
 
-    Promise.all([loadPoolMatches(poolId), loadPoolLifecycle(poolId)])
-      .then(([matches, lifecycle]) => {
-        if (!cancelled) setResult({ poolId, phase: 'ready', matches, lifecycle });
+    Promise.all([loadPoolMatches(poolId), loadPoolLifecycle(poolId), loadMyMatchConfirmations(poolId)])
+      .then(([matches, lifecycle, myConfirmations]) => {
+        if (!cancelled) {
+          setResult({
+            poolId,
+            phase: 'ready',
+            matches,
+            lifecycle,
+            confirmedIds: new Set(myConfirmations),
+            pendingConfirmIds: new Set(),
+            confirmErrorId: null,
+          });
+        }
       })
       .catch(() => {
         if (!cancelled) setResult({ poolId, phase: 'error' });
@@ -93,11 +111,64 @@ function MatchesList({ poolId, userId }: { poolId: string; userId: string | null
     );
   }
 
-  const { matches, lifecycle } = current;
+  const { matches, lifecycle, confirmedIds, pendingConfirmIds, confirmErrorId } = current;
 
   function updateLifecycle(next: PoolLifecycle) {
     setResult((prev) => (prev && prev.phase === 'ready' ? { ...prev, lifecycle: next } : prev));
   }
+
+  /**
+   * Updates the ready state for exactly this poolId, ignoring a late reply
+   * that arrives after the screen has moved on to a different pool -- the
+   * same tagging discipline `current` above already applies to the initial
+   * load, extended to a confirmation started before poolId changed underneath
+   * it.
+   */
+  function updateConfirmState(
+    forPoolId: string,
+    updater: (prev: Extract<ScreenResult, { phase: 'ready' }>) => Extract<ScreenResult, { phase: 'ready' }>
+  ) {
+    setResult((prev) => (prev && prev.phase === 'ready' && prev.poolId === forPoolId ? updater(prev) : prev));
+  }
+
+  async function handleConfirm(mediaId: string) {
+    if (pendingConfirmIds.has(mediaId)) return;
+    const forPoolId = poolId;
+
+    updateConfirmState(forPoolId, (prev) => ({
+      ...prev,
+      pendingConfirmIds: new Set(prev.pendingConfirmIds).add(mediaId),
+      confirmErrorId: null,
+    }));
+
+    try {
+      const outcome = await confirmMatch(poolId, mediaId);
+
+      if (outcome.status === 'confirmed' || outcome.status === 'already_confirmed') {
+        updateConfirmState(forPoolId, (prev) => ({
+          ...prev,
+          confirmedIds: new Set(prev.confirmedIds).add(mediaId),
+        }));
+
+        if (outcome.finalized) {
+          const refreshed = await loadPoolLifecycle(poolId);
+          if (refreshed) updateConfirmState(forPoolId, (prev) => ({ ...prev, lifecycle: refreshed }));
+        }
+      } else {
+        updateConfirmState(forPoolId, (prev) => ({ ...prev, confirmErrorId: mediaId }));
+      }
+    } catch {
+      updateConfirmState(forPoolId, (prev) => ({ ...prev, confirmErrorId: mediaId }));
+    } finally {
+      updateConfirmState(forPoolId, (prev) => {
+        const nextPending = new Set(prev.pendingConfirmIds);
+        nextPending.delete(mediaId);
+        return { ...prev, pendingConfirmIds: nextPending };
+      });
+    }
+  }
+
+  const isCompleted = lifecycle?.status === 'completed';
 
   return (
     <Shell scroll>
@@ -121,7 +192,12 @@ function MatchesList({ poolId, userId }: { poolId: string; userId: string | null
           <MatchRow
             key={match.media.id}
             match={match}
-            isWinner={lifecycle?.status === 'completed' && lifecycle.winnerMediaId === match.media.id}
+            isWinner={isCompleted && lifecycle?.winnerMediaId === match.media.id}
+            isCompleted={isCompleted}
+            confirmed={confirmedIds.has(match.media.id)}
+            pending={pendingConfirmIds.has(match.media.id)}
+            error={confirmErrorId === match.media.id}
+            onConfirm={() => handleConfirm(match.media.id)}
           />
         ))
       )}
@@ -375,7 +451,25 @@ function FinalizeControls({
   );
 }
 
-function MatchRow({ match, isWinner }: { match: PoolMatch; isWinner: boolean }) {
+function MatchRow({
+  match,
+  isWinner,
+  isCompleted,
+  confirmed,
+  pending,
+  error,
+  onConfirm,
+}: {
+  match: PoolMatch;
+  isWinner: boolean;
+  isCompleted: boolean;
+  confirmed: boolean;
+  pending: boolean;
+  error: boolean;
+  onConfirm: () => void;
+}) {
+  const theme = useTheme();
+
   return (
     <ThemedView type="backgroundElement" style={styles.row}>
       {match.media.posterUrl ? (
@@ -390,6 +484,31 @@ function MatchRow({ match, isWinner }: { match: PoolMatch; isWinner: boolean }) 
       {isWinner && (
         <ThemedText type="small" themeColor="textSecondary">
           Winner
+        </ThemedText>
+      )}
+
+      {!isCompleted &&
+        (confirmed ? (
+          <ThemedView style={styles.switchButton}>
+            <ThemedText type="small" themeColor="textSecondary">
+              You want to watch this
+            </ThemedText>
+          </ThemedView>
+        ) : (
+          <Pressable
+            onPress={onConfirm}
+            disabled={pending}
+            style={[
+              styles.smallButton,
+              { backgroundColor: theme.backgroundSelected, opacity: pending ? 0.5 : 1 },
+            ]}>
+            <ThemedText type="smallBold">I want to watch this!</ThemedText>
+          </Pressable>
+        ))}
+
+      {error && (
+        <ThemedText type="small" themeColor="textSecondary" style={styles.message}>
+          {ERROR_MESSAGE}
         </ThemedText>
       )}
     </ThemedView>

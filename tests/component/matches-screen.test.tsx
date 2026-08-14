@@ -37,6 +37,7 @@ const mockConfirmMatch = jest.fn<
   Promise<{ status: string; finalized: boolean; mediaId: string | null }>,
   [string, string]
 >();
+const mockLoadMyMatchConfirmations = jest.fn<Promise<string[]>, [string]>();
 
 jest.mock('expo-router', () => ({
   useLocalSearchParams: () => mockSearchParams,
@@ -59,6 +60,7 @@ jest.mock('react-native-safe-area-context', () => ({
 jest.mock('@/lib/match', () => ({
   loadPoolMatches: (...args: [string]) => mockLoadPoolMatches(...args),
   confirmMatch: (...args: [string, string]) => mockConfirmMatch(...args),
+  loadMyMatchConfirmations: (...args: [string]) => mockLoadMyMatchConfirmations(...args),
 }));
 
 jest.mock('@/lib/pool', () => ({
@@ -145,9 +147,11 @@ beforeEach(() => {
   mockFinalizePool.mockReset();
   mockFinalizePoolRandom.mockReset();
   mockConfirmMatch.mockReset();
+  mockLoadMyMatchConfirmations.mockReset();
   mockSearchParams = { poolId: 'pool-abc' };
   mockUserId = 'user-owner';
   mockLoadPoolLifecycle.mockResolvedValue(lifecycle());
+  mockLoadMyMatchConfirmations.mockResolvedValue([]);
 });
 
 describe('MatchesScreen', () => {
@@ -438,6 +442,7 @@ describe('MatchesScreen', () => {
       match('pool-abc', 'media-1', 'Arrival', null, true),
       match('pool-abc', 'media-2', 'Moonlight'),
     ]);
+    mockLoadMyMatchConfirmations.mockResolvedValueOnce(['media-1']);
 
     const screen = await render(<MatchesScreen />);
     await waitFor(() => expect(screen.getByText('Arrival')).toBeTruthy());
