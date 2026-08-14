@@ -17,7 +17,9 @@ import { GroupProvider } from '@/lib/group';
  * becoming one. `pool/[poolId]` is the same idea for the swipe deck: a
  * detail-style push outside the tab bar, not a tab of its own.
  * `pool/[poolId]/matches` is a further push from there, the pool-specific
- * match history rather than a tab or a modal.
+ * match history rather than a tab or a modal. `group/[groupId]/pools` is the
+ * same kind of push from Home -- a group's full pool history, one level
+ * below the three-pool preview a group section shows there.
  */
 export default function AuthenticatedLayout() {
   return (
@@ -27,6 +29,7 @@ export default function AuthenticatedLayout() {
         <Stack.Screen name="pair" options={{ presentation: 'modal' }} />
         <Stack.Screen name="pool/[poolId]" />
         <Stack.Screen name="pool/[poolId]/matches" />
+        <Stack.Screen name="group/[groupId]/pools" />
       </Stack>
     </GroupProvider>
   );

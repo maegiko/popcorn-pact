@@ -393,3 +393,187 @@ export async function finalizePoolRandom(
   if (error) throw error;
   return toFinalizeResult(data);
 }
+
+/**
+ * Canonical media fields Home/history need to render a winner -- same shape
+ * as match.ts's MatchMedia and pool.ts's own PoolWinnerMedia, with `overview`
+ * added since a dashboard card shows more than a title. Provider identity
+ * stops at the boundary that produced this row.
+ */
+export type DashboardMediaWinner = {
+  id: string;
+  mediaType: 'movie' | 'tv';
+  title: string;
+  posterUrl: string | null;
+  overview: string | null;
+};
+
+/** One pool's dashboard-facing summary, shared by Home's preview and the full group history screen. */
+export type DashboardPool = {
+  id: string;
+  status: PoolStatus;
+  plannedFor: string | null;
+  createdAt: string;
+  winner: DashboardMediaWinner | null;
+};
+
+export type DashboardGroup = {
+  id: string;
+  name: string;
+  pools: DashboardPool[];
+};
+
+/**
+ * The columns both loadHomeGroups and loadGroupPoolHistory read from
+ * home_group_pool_dashboard -- one flat, provider-independent view joining a
+ * group's pools to their canonical winner media, ranked per group by recency
+ * (`home_rank`) so Home's three-pool cap is a `lte` rather than a client-side
+ * slice.
+ */
+const HOME_DASHBOARD_SELECT =
+  'group_id, group_name, group_joined_at, home_rank, pool_id, pool_status, pool_planned_for, pool_created_at, winner_media_id, winner_media_type, winner_title, winner_poster_url, winner_overview';
+
+const HOME_POOLS_PER_GROUP = 3;
+
+type HomeDashboardRow = {
+  group_id: string;
+  group_name: string;
+  pool_id: string;
+  pool_status: PoolStatus;
+  pool_planned_for: string | null;
+  pool_created_at: string;
+  winner_media_id: string | null;
+  winner_media_type: 'movie' | 'tv' | null;
+  winner_title: string | null;
+  winner_poster_url: string | null;
+  winner_overview: string | null;
+};
+
+function toDashboardPool(row: HomeDashboardRow): DashboardPool {
+  return {
+    id: row.pool_id,
+    status: row.pool_status,
+    plannedFor: row.pool_planned_for,
+    createdAt: row.pool_created_at,
+    winner: row.winner_media_id
+      ? {
+          id: row.winner_media_id,
+          mediaType: row.winner_media_type as 'movie' | 'tv',
+          title: row.winner_title ?? '',
+          posterUrl: row.winner_poster_url,
+          overview: row.winner_overview,
+        }
+      : null,
+  };
+}
+
+/** Folds the view's flat rows into one entry per group, preserving row order for both groups and pools. */
+function groupDashboardRows(rows: HomeDashboardRow[]): DashboardGroup[] {
+  const groups: DashboardGroup[] = [];
+  const byGroupId = new Map<string, DashboardGroup>();
+
+  for (const row of rows) {
+    let group = byGroupId.get(row.group_id);
+    if (!group) {
+      group = { id: row.group_id, name: row.group_name, pools: [] };
+      byGroupId.set(row.group_id, group);
+      groups.push(group);
+    }
+    group.pools.push(toDashboardPool(row));
+  }
+
+  return groups;
+}
+
+/**
+ * Loads every group the caller belongs to, each with its most recent pools
+ * (active and completed mixed, newest first, capped at
+ * `HOME_POOLS_PER_GROUP`). A direct RLS-backed read: the view already scopes
+ * rows to the caller's own memberships, so nothing here filters by user.
+ * Groups come back oldest-membership-first, matching group.tsx's own
+ * ordering convention.
+ */
+export async function loadHomeGroups(): Promise<DashboardGroup[]> {
+  const { data, error } = await supabase
+    .from('home_group_pool_dashboard')
+    .select(HOME_DASHBOARD_SELECT)
+    .lte('home_rank', HOME_POOLS_PER_GROUP)
+    .order('group_joined_at', { ascending: true })
+    .order('pool_created_at', { ascending: false });
+
+  if (error) throw error;
+
+  return groupDashboardRows((data ?? []) as HomeDashboardRow[]);
+}
+
+/**
+ * Loads every pool for one group, newest first, with no cap -- the full
+ * history behind Home's three-pool preview. `groupId` is exact: RLS still
+ * governs visibility, so a group the caller does not belong to resolves to
+ * an empty list rather than an error.
+ */
+export async function loadGroupPoolHistory(groupId: string): Promise<DashboardPool[]> {
+  const { data, error } = await supabase
+    .from('home_group_pool_dashboard')
+    .select(HOME_DASHBOARD_SELECT)
+    .eq('group_id', groupId)
+    .order('pool_created_at', { ascending: false });
+
+  if (error) throw error;
+
+  return ((data ?? []) as HomeDashboardRow[]).map(toDashboardPool);
+}
+
+/** Stable identity so consumers do not re-render when the dashboard is empty. */
+const EMPTY_DASHBOARD_GROUPS: DashboardGroup[] = [];
+
+export type HomeDashboardStatus = 'loading' | 'error' | 'ready';
+
+/** A load tagged by its own attempt, the same discipline group.tsx's GroupProvider uses for retries. */
+type HomeDashboardResult = { attempt: number } & (
+  | { status: 'loaded'; groups: DashboardGroup[] }
+  | { status: 'error' }
+);
+
+/**
+ * Home's multi-group dashboard. Loads on mount and exposes `refresh` for the
+ * one thing it cannot observe on its own -- a pool this member just
+ * generated, which must appear as the newest pool in its group immediately
+ * rather than waiting for a remount.
+ */
+export function useHomeDashboard(): {
+  status: HomeDashboardStatus;
+  groups: DashboardGroup[];
+  refresh: () => void;
+} {
+  const [result, setResult] = useState<HomeDashboardResult | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const thisAttempt = attempt;
+
+    loadHomeGroups()
+      .then((groups) => {
+        if (!cancelled) setResult({ attempt: thisAttempt, status: 'loaded', groups });
+      })
+      .catch(() => {
+        if (!cancelled) setResult({ attempt: thisAttempt, status: 'error' });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [attempt]);
+
+  // A result from a superseded attempt is simply not a match, so it reads as
+  // 'loading' -- the same tagged-result discipline as useLatestActivePool
+  // above, extended from a group id to a reload attempt.
+  const current = result && result.attempt === attempt ? result : null;
+  const status: HomeDashboardStatus = !current ? 'loading' : current.status === 'error' ? 'error' : 'ready';
+  const groups = current?.status === 'loaded' ? current.groups : EMPTY_DASHBOARD_GROUPS;
+
+  const refresh = useCallback(() => setAttempt((count) => count + 1), []);
+
+  return { status, groups, refresh };
+}

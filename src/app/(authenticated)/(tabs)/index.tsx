@@ -1,23 +1,27 @@
 import { useRouter } from 'expo-router';
+import { SymbolView } from 'expo-symbols';
 import { useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { GroupRequired } from '@/components/group-required';
+import { PoolHistoryCard } from '@/components/pool-history-card';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useSession } from '@/lib/auth';
-import { useGroups } from '@/lib/group';
-import { useGeneratePool, useLatestActivePool, type GeneratePoolState } from '@/lib/pool';
+import { useGeneratePool, useHomeDashboard, type DashboardGroup, type GeneratePoolState } from '@/lib/pool';
+
+const ERROR_MESSAGE = 'Something went wrong. Try again.';
 
 /**
- * The shared watching surface. The swipe deck lands inside <GroupRequired /> in
- * Phase 4.
+ * The shared watching surface: a multi-group dashboard, one section per group
+ * the caller belongs to, each showing its most recent pools. A single group
+ * is the free-tier steady state, but nothing here assumes there is only one.
  *
- * Sign out sits deliberately *outside* the gate: account-level actions must work
- * for someone who is not in a group. It lives here only until there is a
+ * Sign out sits deliberately *outside* the gate: account-level actions must
+ * work for someone who is not in a group. It lives here only until there is a
  * settings tab to own it, along with subscription, billing and notifications.
  */
 export default function HomeScreen() {
@@ -25,7 +29,7 @@ export default function HomeScreen() {
     <ThemedView style={styles.container}>
       <View style={styles.gated}>
         <GroupRequired>
-          <PairedHome />
+          <Dashboard />
         </GroupRequired>
       </View>
 
@@ -34,54 +38,48 @@ export default function HomeScreen() {
   );
 }
 
-function PairedHome() {
-  const theme = useTheme();
-  const router = useRouter();
-  const { currentGroup, partner } = useGroups();
+function Dashboard() {
+  const dashboard = useHomeDashboard();
+
+  if (dashboard.status === 'loading') {
+    return (
+      <SafeAreaView style={styles.messageArea}>
+        <ThemedText type="small" themeColor="textSecondary">
+          Loading your groups
+        </ThemedText>
+      </SafeAreaView>
+    );
+  }
+
+  if (dashboard.status === 'error') {
+    return (
+      <SafeAreaView style={styles.messageArea}>
+        <ThemedText type="small" themeColor="textSecondary">
+          {ERROR_MESSAGE}
+        </ThemedText>
+      </SafeAreaView>
+    );
+  }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <ThemedText type="subtitle">
-        {partner ? `You and ${partner.displayName ?? 'your partner'}` : 'Waiting for them'}
-      </ThemedText>
-
-      <ThemedText type="small" themeColor="textSecondary">
-        {partner
-          ? 'Find something to watch together.'
-          : 'Share your code, or start a pool while you wait.'}
-      </ThemedText>
-
-      {currentGroup && <PoolSection groupId={currentGroup.id} />}
-
-      {/*
-        Unconditional on purpose. /pair owns leaving the group, so hiding this
-        once a partner joins would strand the only exit and make pairing with
-        the wrong person unrecoverable.
-      */}
-      <Pressable
-        onPress={() => router.push('/pair')}
-        style={[styles.button, { backgroundColor: theme.backgroundSelected }]}>
-        <ThemedText type="smallBold">{partner ? 'Group settings' : 'Show invite code'}</ThemedText>
-      </Pressable>
-
-      {currentGroup && (
-        <ThemedView type="backgroundElement" style={styles.card}>
-          <ThemedText type="small" themeColor="textSecondary">
-            Members
-          </ThemedText>
-          <ThemedText type="default">
-            {currentGroup.memberCount} of {currentGroup.memberLimit}
-          </ThemedText>
-        </ThemedView>
-      )}
-    </SafeAreaView>
+    <ScrollView contentContainerStyle={styles.scrollContent}>
+      <SafeAreaView edges={['top']} style={styles.safeArea}>
+        {dashboard.groups.map((group) => (
+          // dashboard.refresh is optional-called: real usage always provides
+          // it, but a caller that only mocks {status, groups} (see the Home
+          // tests) must not crash a group section that never fires it.
+          <GroupSection key={group.id} group={group} onGenerated={() => dashboard.refresh?.()} />
+        ))}
+      </SafeAreaView>
+    </ScrollView>
   );
 }
 
 /**
- * generate-pool's status vocabulary, worded for the person tapping the button.
- * 'idle'/'generating'/'created' have no message of their own here -- idle and
- * generating are silent, and 'created' gets its own success view instead.
+ * generate-pool's status vocabulary, worded for the person tapping the
+ * button. 'idle'/'generating'/'created' have no message of their own -- idle
+ * and generating are silent, and 'created' needs no message because the new
+ * pool simply appears in the list above once the dashboard refreshes.
  */
 function poolMessage(state: GeneratePoolState): string | null {
   switch (state) {
@@ -105,140 +103,76 @@ function poolMessage(state: GeneratePoolState): string | null {
 }
 
 /**
- * Quick Start requests a generated pool immediately; Fine Tune is a named entry
- * point for filters the product does not have yet (runtime, genre, mood), so it
- * surfaces a "coming soon" message rather than inventing settings.
- *
- * Before offering that beginner flow, Home checks whether the group already
- * has a pool it has not finished with -- `useLatestActivePool` mirrors the
- * pools lifecycle migration's recovery rule (newest pool with status =
- * 'active'). That status is group-level: a member who swiped through their
- * own deck does not hide the pool, only the group completing it would, and
- * nothing here does that.
- *
- * Both hooks are keyed on `groupId`, so if the group changes underneath this
- * screen (leaving, switching), any in-flight request or lookup for the old
- * group is dropped rather than landing here.
+ * One group's section: name/history header, up to three recent pools, and
+ * `Make new pool` -- always available, even with active pools already
+ * showing, since generating one is never gated on finishing another.
  */
-function PoolSection({ groupId }: { groupId: string }) {
+function GroupSection({ group, onGenerated }: { group: DashboardGroup; onGenerated: () => void }) {
   const theme = useTheme();
   const router = useRouter();
-  const activePool = useLatestActivePool(groupId);
-  const { state, poolId, generate, reset } = useGeneratePool(groupId);
-  const [fineTuneMessage, setFineTuneMessage] = useState<string | null>(null);
+  const { state, generate } = useGeneratePool(group.id);
   const busy = state === 'generating';
 
-  // A pool this member just generated always wins over a recovered one, even
-  // if the recovery lookup found something else first -- it is the newest
-  // active pool the instant it is created.
-  if (state === 'created') {
-    return (
-      <ThemedView type="backgroundElement" style={styles.poolCard}>
-        <ThemedText type="smallBold">Your pool is ready</ThemedText>
-        <ThemedText type="small" themeColor="textSecondary" style={styles.message}>
-          Swipe through it together to find something to watch.
-        </ThemedText>
-
-        {poolId && (
-          <Pressable
-            onPress={() => router.push({ pathname: '/pool/[poolId]', params: { poolId } })}
-            style={[styles.button, { backgroundColor: theme.backgroundSelected }]}>
-            <ThemedText type="smallBold">Start swiping</ThemedText>
-          </Pressable>
-        )}
-
-        <Pressable onPress={reset} style={styles.switchButton}>
-          <ThemedText type="small" themeColor="textSecondary">
-            Make a new pool
-          </ThemedText>
-        </Pressable>
-      </ThemedView>
-    );
+  async function handleGenerate() {
+    await generate();
+    onGenerated();
   }
-
-  // Nothing to show yet either way -- avoid flashing the beginner UI while
-  // the recovery lookup is still in flight.
-  if (activePool.status === 'loading') {
-    return null;
-  }
-
-  if (activePool.status === 'found' && activePool.poolId) {
-    const recoveredPoolId = activePool.poolId;
-
-    return (
-      <ThemedView type="backgroundElement" style={styles.poolCard}>
-        <ThemedText type="smallBold">Pick up where you left off</ThemedText>
-        <ThemedText type="small" themeColor="textSecondary" style={styles.message}>
-          You still have a pool to swipe through together.
-        </ThemedText>
-
-        <Pressable
-          onPress={() =>
-            router.push({ pathname: '/pool/[poolId]', params: { poolId: recoveredPoolId } })
-          }
-          disabled={busy}
-          style={[
-            styles.button,
-            { backgroundColor: theme.backgroundSelected, opacity: busy ? 0.5 : 1 },
-          ]}>
-          <ThemedText type="smallBold">Continue swiping</ThemedText>
-        </Pressable>
-
-        <Pressable
-          onPress={() => {
-            setFineTuneMessage(null);
-            generate();
-          }}
-          disabled={busy}
-          style={styles.switchButton}>
-          <ThemedText type="small" themeColor="textSecondary">
-            {busy ? 'Finding titles…' : 'Make new pool'}
-          </ThemedText>
-        </Pressable>
-
-        {poolMessage(state) && (
-          <ThemedText type="small" themeColor="textSecondary" style={styles.message}>
-            {poolMessage(state)}
-          </ThemedText>
-        )}
-      </ThemedView>
-    );
-  }
-
-  // activePool.status is 'none' or 'error' here -- a failed recovery lookup
-  // falls back to the same beginner flow a group with no pool yet gets,
-  // rather than dead-ending Home, with the same error copy/style Quick Start
-  // itself uses for a failure.
-  const message =
-    poolMessage(state) ?? fineTuneMessage ?? (activePool.status === 'error' ? poolMessage('error') : null);
 
   return (
-    <ThemedView type="backgroundElement" style={styles.poolCard}>
-      <Pressable
-        onPress={() => {
-          setFineTuneMessage(null);
-          generate();
-        }}
-        disabled={busy}
-        style={[
-          styles.button,
-          { backgroundColor: theme.backgroundSelected, opacity: busy ? 0.5 : 1 },
-        ]}>
-        <ThemedText type="smallBold">{busy ? 'Finding titles…' : 'Quick Start'}</ThemedText>
-      </Pressable>
+    <ThemedView style={styles.section}>
+      <ThemedView style={styles.sectionHeader}>
+        <Pressable
+          onPress={() =>
+            router.push({ pathname: '/group/[groupId]/pools', params: { groupId: group.id } })
+          }
+          style={styles.sectionTitleButton}>
+          <ThemedText type="subtitle">{group.name}</ThemedText>
+        </Pressable>
 
-      <Pressable
-        onPress={() => setFineTuneMessage('Fine-tuning options are coming soon.')}
-        disabled={busy}
-        style={styles.switchButton}>
+        <View style={styles.sectionActions}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Invite ${group.name}`}
+            onPress={() =>
+              router.push({ pathname: '/pair', params: { groupId: group.id, mode: 'invite' } })
+            }
+            style={styles.iconButton}>
+            <SymbolView
+              name={{ ios: 'person.badge.plus', android: 'person_add', web: 'person_add' }}
+              size={20}
+              tintColor={theme.text}
+            />
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Group settings for ${group.name}`}
+            onPress={() =>
+              router.push({ pathname: '/pair', params: { groupId: group.id, mode: 'settings' } })
+            }
+            style={styles.iconButton}>
+            <SymbolView
+              name={{ ios: 'gearshape', android: 'settings', web: 'settings' }}
+              size={20}
+              tintColor={theme.text}
+            />
+          </Pressable>
+        </View>
+      </ThemedView>
+
+      {group.pools.map((pool) => (
+        <PoolHistoryCard key={pool.id} pool={pool} />
+      ))}
+
+      <Pressable onPress={handleGenerate} disabled={busy} style={styles.switchButton}>
         <ThemedText type="small" themeColor="textSecondary">
-          Fine Tune
+          {busy ? 'Finding titles…' : 'Make new pool'}
         </ThemedText>
       </Pressable>
 
-      {message && (
+      {poolMessage(state) && (
         <ThemedText type="small" themeColor="textSecondary" style={styles.message}>
-          {message}
+          {poolMessage(state)}
         </ThemedText>
       )}
     </ThemedView>
@@ -273,29 +207,42 @@ const styles = StyleSheet.create({
   gated: {
     flex: 1,
   },
+  scrollContent: {
+    flexGrow: 1,
+  },
   safeArea: {
-    flex: 1,
-    justifyContent: 'center',
     alignSelf: 'center',
     width: '100%',
     maxWidth: MaxContentWidth,
     paddingHorizontal: Spacing.four,
+    gap: Spacing.five,
+  },
+  messageArea: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.four,
+  },
+  section: {
     gap: Spacing.three,
   },
-  card: {
-    borderRadius: Spacing.three,
-    padding: Spacing.three,
-    gap: Spacing.one,
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
-  poolCard: {
-    borderRadius: Spacing.three,
-    padding: Spacing.three,
+  sectionTitleButton: {
+    flexShrink: 1,
+  },
+  sectionActions: {
+    flexDirection: 'row',
     gap: Spacing.two,
   },
-  button: {
-    borderRadius: Spacing.two,
-    paddingVertical: Spacing.three,
+  iconButton: {
+    width: Spacing.five,
+    height: Spacing.five,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   account: {
     paddingBottom: BottomTabInset + Spacing.three,
