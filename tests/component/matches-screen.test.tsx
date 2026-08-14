@@ -13,6 +13,7 @@ type MatchMedia = {
 type PoolMatch = {
   poolId: string;
   media: MatchMedia;
+  confirmedByMe?: boolean;
 };
 
 type PoolLifecycle = {
@@ -32,6 +33,10 @@ const mockLoadPoolLifecycle = jest.fn<Promise<PoolLifecycle | null>, [string]>()
 const mockSetPoolPlannedFor = jest.fn<Promise<{ status: string }>, [string, string | null]>();
 const mockFinalizePool = jest.fn<Promise<{ status: string; mediaId: string | null }>, [string, string]>();
 const mockFinalizePoolRandom = jest.fn<Promise<{ status: string; mediaId: string | null }>, [string]>();
+const mockConfirmMatch = jest.fn<
+  Promise<{ status: string; finalized: boolean; mediaId: string | null }>,
+  [string, string]
+>();
 
 jest.mock('expo-router', () => ({
   useLocalSearchParams: () => mockSearchParams,
@@ -53,6 +58,7 @@ jest.mock('react-native-safe-area-context', () => ({
 // pool-screen.test.tsx uses for <SwipeDeck />.
 jest.mock('@/lib/match', () => ({
   loadPoolMatches: (...args: [string]) => mockLoadPoolMatches(...args),
+  confirmMatch: (...args: [string, string]) => mockConfirmMatch(...args),
 }));
 
 jest.mock('@/lib/pool', () => ({
@@ -83,9 +89,16 @@ jest.mock('@/components/planned-time-picker', () => {
   };
 });
 
-function match(poolId: string, id: string, title: string, posterUrl: string | null = null): PoolMatch {
+function match(
+  poolId: string,
+  id: string,
+  title: string,
+  posterUrl: string | null = null,
+  confirmedByMe = false
+): PoolMatch {
   return {
     poolId,
+    confirmedByMe,
     media: {
       id,
       mediaType: 'movie',
@@ -126,7 +139,12 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  mockLoadPoolMatches.mockReset();
+  mockLoadPoolLifecycle.mockReset();
+  mockSetPoolPlannedFor.mockReset();
+  mockFinalizePool.mockReset();
+  mockFinalizePoolRandom.mockReset();
+  mockConfirmMatch.mockReset();
   mockSearchParams = { poolId: 'pool-abc' };
   mockUserId = 'user-owner';
   mockLoadPoolLifecycle.mockResolvedValue(lifecycle());
@@ -401,6 +419,112 @@ describe('MatchesScreen', () => {
     expect(screen.getByText('Arrival')).toBeTruthy();
   });
 
+  test('unconfirmed active matches expose the match confirmation action', async () => {
+    mockLoadPoolMatches.mockResolvedValueOnce([match('pool-abc', 'media-1', 'Arrival')]);
+    mockConfirmMatch.mockResolvedValueOnce({ status: 'confirmed', finalized: false, mediaId: null });
+
+    const screen = await render(<MatchesScreen />);
+    await waitFor(() => expect(screen.getByText('Arrival')).toBeTruthy());
+
+    await fireEvent.press(screen.getByText('I want to watch this!'));
+
+    expect(mockConfirmMatch).toHaveBeenCalledWith('pool-abc', 'media-1');
+    await waitFor(() => expect(screen.getByText('You want to watch this')).toBeTruthy());
+    expect(screen.queryByText(/liked by/i)).toBeNull();
+  });
+
+  test('matches already confirmed by the current user show a read-only state', async () => {
+    mockLoadPoolMatches.mockResolvedValueOnce([
+      match('pool-abc', 'media-1', 'Arrival', null, true),
+      match('pool-abc', 'media-2', 'Moonlight'),
+    ]);
+
+    const screen = await render(<MatchesScreen />);
+    await waitFor(() => expect(screen.getByText('Arrival')).toBeTruthy());
+
+    expect(screen.getByText('You want to watch this')).toBeTruthy();
+    await fireEvent.press(screen.getByText('You want to watch this'));
+
+    expect(mockConfirmMatch).not.toHaveBeenCalledWith('pool-abc', 'media-1');
+    expect(screen.getByText('I want to watch this!')).toBeTruthy();
+  });
+
+  test('the current user may confirm multiple different matches', async () => {
+    mockLoadPoolMatches.mockResolvedValueOnce([
+      match('pool-abc', 'media-1', 'Arrival'),
+      match('pool-abc', 'media-2', 'Moonlight'),
+    ]);
+    mockConfirmMatch.mockResolvedValue({ status: 'confirmed', finalized: false, mediaId: null });
+
+    const screen = await render(<MatchesScreen />);
+    await waitFor(() => expect(screen.getByText('Arrival')).toBeTruthy());
+
+    const confirmButtons = screen.getAllByText('I want to watch this!');
+    await fireEvent.press(confirmButtons[0]);
+    await fireEvent.press(confirmButtons[1]);
+
+    expect(mockConfirmMatch).toHaveBeenNthCalledWith(1, 'pool-abc', 'media-1');
+    expect(mockConfirmMatch).toHaveBeenNthCalledWith(2, 'pool-abc', 'media-2');
+  });
+
+  test('auto-finalizing confirmation transitions to the existing completed winner state', async () => {
+    mockLoadPoolMatches.mockResolvedValueOnce([match('pool-abc', 'media-1', 'Arrival')]);
+    mockConfirmMatch.mockResolvedValueOnce({ status: 'confirmed', finalized: true, mediaId: 'media-1' });
+
+    const screen = await render(<MatchesScreen />);
+    await waitFor(() => expect(screen.getByText('Arrival')).toBeTruthy());
+
+    mockLoadPoolLifecycle.mockResolvedValueOnce(
+      lifecycle({
+        status: 'completed',
+        winnerMediaId: 'media-1',
+        finalizedAt: '2026-08-13T21:00:00.000Z',
+        winner: media('media-1', 'Arrival'),
+      })
+    );
+
+    await fireEvent.press(screen.getByText('I want to watch this!'));
+
+    await waitFor(() => expect(screen.getByText(/completed/i)).toBeTruthy());
+    expect(screen.getByText('Arrival')).toBeTruthy();
+    expect(screen.queryByText('I want to watch this!')).toBeNull();
+    expect(screen.queryByText('Pick for us')).toBeNull();
+    expect(screen.queryByText('Choose manually')).toBeNull();
+  });
+
+  test('owner finalization controls remain alongside confirmation while the pool is active', async () => {
+    mockLoadPoolMatches.mockResolvedValueOnce([
+      match('pool-abc', 'media-1', 'Arrival'),
+      match('pool-abc', 'media-2', 'Moonlight'),
+    ]);
+
+    const screen = await render(<MatchesScreen />);
+    await waitFor(() => expect(screen.getByText('Arrival')).toBeTruthy());
+
+    expect(screen.getAllByText('I want to watch this!')).toHaveLength(2);
+    expect(screen.getByText('Pick for us')).toBeTruthy();
+    expect(screen.getByText('Choose manually')).toBeTruthy();
+  });
+
+  test('non-owner can confirm matches while still lacking manual/random finalization controls', async () => {
+    mockUserId = 'user-partner';
+    mockLoadPoolMatches.mockResolvedValueOnce([
+      match('pool-abc', 'media-1', 'Arrival'),
+      match('pool-abc', 'media-2', 'Moonlight'),
+    ]);
+    mockConfirmMatch.mockResolvedValueOnce({ status: 'confirmed', finalized: false, mediaId: null });
+
+    const screen = await render(<MatchesScreen />);
+    await waitFor(() => expect(screen.getByText('Arrival')).toBeTruthy());
+
+    await fireEvent.press(screen.getAllByText('I want to watch this!')[0]);
+
+    expect(mockConfirmMatch).toHaveBeenCalledWith('pool-abc', 'media-1');
+    expect(screen.queryByText('Finalize match')).toBeNull();
+    expect(screen.queryByText('Pick for us')).toBeNull();
+    expect(screen.queryByText('Choose manually')).toBeNull();
+  });
+
   test('multiple-match active pool lets the owner pick randomly or manually', async () => {
     mockLoadPoolMatches.mockResolvedValueOnce([
       match('pool-abc', 'media-1', 'Arrival'),
@@ -487,6 +611,7 @@ describe('MatchesScreen', () => {
     expect(screen.queryByText('Finalize match')).toBeNull();
     expect(screen.queryByText('Pick for us')).toBeNull();
     expect(screen.queryByText('Choose manually')).toBeNull();
+    expect(screen.queryByText('I want to watch this!')).toBeNull();
     expect(screen.getByText('Edit planned time')).toBeTruthy();
     expect(screen.queryByText(/swipe/i)).toBeNull();
   });
