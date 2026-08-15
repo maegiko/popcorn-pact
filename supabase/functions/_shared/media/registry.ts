@@ -25,7 +25,11 @@
 
 import { createStreamingAvailabilityProvider } from './providers/streaming-availability.ts';
 import { createTmdbProvider } from './providers/tmdb.ts';
-import { createTvdbProvider } from './providers/tvdb.ts';
+import {
+  createTvdbProvider,
+  diagnoseTvdbOverviews,
+  type TvdbOverviewDiagnostic,
+} from './providers/tvdb.ts';
 import { MediaProviderConfigurationError, type MediaProvider } from './types.ts';
 
 export const PROVIDER_NAMES = ['tmdb', 'tvdb', 'streaming-availability'] as const;
@@ -90,6 +94,22 @@ export function createMediaProvider(name: ProviderName, baseUrl: string): MediaP
         country: (env('STREAMING_AVAILABILITY_COUNTRY') || 'us').toLowerCase(),
       });
   }
+}
+
+/** Hosted-only TVDB observation using the same secret-backed adapter config. */
+export function diagnoseConfiguredTvdbOverviews(
+  limit: number,
+  baseUrl = defaultBaseUrl('tvdb')
+): Promise<TvdbOverviewDiagnostic> {
+  return diagnoseTvdbOverviews(
+    {
+      baseUrl,
+      apiKey: env('TVDB_API_KEY'),
+      pin: env('TVDB_PIN'),
+      imageBaseUrl: env('TVDB_IMAGE_BASE_URL') || 'https://artworks.thetvdb.com',
+    },
+    limit
+  );
 }
 
 // Spelled out rather than derived from the name: TMDB_API_BASE_URL predates the

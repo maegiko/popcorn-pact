@@ -32,10 +32,15 @@ import {
   configuredProviderName,
   createMediaProvider,
   defaultBaseUrl,
+  diagnoseConfiguredTvdbOverviews,
   isProviderName,
   type ProviderName,
 } from '../_shared/media/registry.ts';
 import { isLoopbackHost } from '../_shared/media/http.ts';
+import {
+  TvdbOverviewDiagnosticError,
+  type TvdbOverviewDiagnostic,
+} from '../_shared/media/providers/tvdb.ts';
 import {
   MEDIA_TYPES,
   MediaProviderUnavailableError,
@@ -56,6 +61,7 @@ const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
 // upstreams rather than trimming ordinary ones -- which is why plain
 // concatenation of the two media types cannot starve one of them here.
 const MAX_POOL_TITLES = 60;
+const TVDB_OVERVIEW_DIAGNOSTIC = 'tvdb-overview';
 
 // TEST/DEVELOPMENT SEAM. Lets the test suite point generation at a mock upstream,
 // and exercise a provider other than the configured one, without mocking the
@@ -84,7 +90,18 @@ type GenerateStatus =
   | 'unauthenticated'
   | 'error';
 
-type GenerateRequest = { groupId: string; services: ServiceFilter };
+type DiagnosticStatus =
+  | 'tvdb_overview_ok'
+  | 'tvdb_no_overview'
+  | 'tvdb_normalization_failure'
+  | 'tvdb_authentication_failure'
+  | 'tvdb_network_or_rate_limit_failure'
+  | 'tvdb_provider_failure'
+  | 'diagnostic_forbidden';
+
+type GenerateRequest = { kind: 'generate'; groupId: string; services: ServiceFilter };
+type DiagnosticRequest = { kind: 'tvdb-overview'; groupId: string };
+type FunctionRequest = GenerateRequest | DiagnosticRequest;
 
 // One canonical media record, in the shape create_generated_pool() reads. This
 // is the only place the two vocabularies meet, and it is a rename and nothing
@@ -128,13 +145,24 @@ function respond(status: GenerateStatus, poolId: string | null, httpStatus = 200
   });
 }
 
+function respondToDiagnostic(
+  status: DiagnosticStatus,
+  diagnostic: TvdbOverviewDiagnostic | null,
+  httpStatus = 200
+): Response {
+  return new Response(JSON.stringify({ status, diagnostic }), {
+    status: httpStatus,
+    headers: { 'content-type': 'application/json', ...CORS_HEADERS },
+  });
+}
+
 function bearerToken(request: Request): string | null {
   const header = request.headers.get('authorization') ?? '';
   const match = header.match(/^Bearer\s+(.+)$/i);
   return match ? match[1].trim() : null;
 }
 
-async function parseRequest(request: Request): Promise<GenerateRequest | null> {
+async function parseRequest(request: Request): Promise<FunctionRequest | null> {
   let body: unknown;
   try {
     body = await request.json();
@@ -143,15 +171,19 @@ async function parseRequest(request: Request): Promise<GenerateRequest | null> {
   }
 
   if (typeof body !== 'object' || body === null) return null;
-  const { groupId, effectiveProviderIds } = body as Record<string, unknown>;
+  const { groupId, effectiveProviderIds, diagnostic } = body as Record<string, unknown>;
 
   if (typeof groupId !== 'string' || groupId.trim() === '') return null;
+  if (diagnostic === TVDB_OVERVIEW_DIAGNOSTIC) {
+    return { kind: 'tvdb-overview', groupId };
+  }
+  if (diagnostic !== undefined) return null;
 
   // Narrowing by streaming service is optional, so an absent key means the same
   // as null: no filter. An explicit empty array does NOT -- that means "no
   // service is eligible", which is a real and different answer.
   if (effectiveProviderIds === null || effectiveProviderIds === undefined) {
-    return { groupId, services: null };
+    return { kind: 'generate', groupId, services: null };
   }
 
   if (!Array.isArray(effectiveProviderIds)) return null;
@@ -173,7 +205,7 @@ async function parseRequest(request: Request): Promise<GenerateRequest | null> {
     return null;
   }
 
-  return { groupId, services };
+  return { kind: 'generate', groupId, services };
 }
 
 // ---------------------------------------------------------------------------
@@ -209,17 +241,23 @@ async function resolveUserId(token: string): Promise<string | null> {
 // security_invoker, so a group the caller does not belong to is simply not
 // visible -- membership and existence collapse into one answer, which is what
 // not_a_member should mean anyway.
-async function readGroupState(token: string, groupId: string): Promise<string | null> {
+async function readGroupAccess(
+  token: string,
+  groupId: string
+): Promise<{ state: string; createdBy: string } | null> {
   const url = new URL(`${SUPABASE_URL}/rest/v1/group_access`);
-  url.searchParams.set('select', 'state');
+  url.searchParams.set('select', 'state,created_by');
   url.searchParams.set('group_id', `eq.${groupId}`);
 
   const response = await fetch(url, { headers: callerHeaders(token) });
   if (!response.ok) throw new Error(`group_access responded ${response.status}`);
 
-  const rows = (await response.json()) as { state?: unknown }[];
+  const rows = (await response.json()) as { state?: unknown; created_by?: unknown }[];
   const state = rows[0]?.state;
-  return typeof state === 'string' ? state : null;
+  const createdBy = rows[0]?.created_by;
+  return typeof state === 'string' && typeof createdBy === 'string'
+    ? { state, createdBy }
+    : null;
 }
 
 async function createGeneratedPool(
@@ -258,6 +296,52 @@ function resolveProvider(request: Request) {
   const baseUrl = override?.baseUrl ?? defaultBaseUrl(name);
 
   return createMediaProvider(name, baseUrl);
+}
+
+async function runTvdbOverviewDiagnostic(request: Request): Promise<Response> {
+  const override = testOverrides(request);
+
+  try {
+    const diagnostic = await diagnoseConfiguredTvdbOverviews(
+      MAX_POOL_TITLES,
+      override?.provider === 'tvdb' ? override.baseUrl : undefined
+    );
+
+    if (
+      diagnostic.normalizationDroppedCount > 0 ||
+      diagnostic.movieDetails.normalizationDroppedCount > 0
+    ) {
+      return respondToDiagnostic('tvdb_normalization_failure', diagnostic);
+    }
+    const detailFailure = diagnostic.movieDetails.samples.find((item) => item.failure !== null)?.failure;
+    if (detailFailure === 'authentication') {
+      return respondToDiagnostic('tvdb_authentication_failure', diagnostic, 502);
+    }
+    if (detailFailure === 'network_or_rate_limit') {
+      return respondToDiagnostic('tvdb_network_or_rate_limit_failure', diagnostic, 503);
+    }
+    if (detailFailure === 'provider') {
+      return respondToDiagnostic('tvdb_provider_failure', diagnostic, 502);
+    }
+    if (
+      diagnostic.rawOverviewPresentCount === 0 ||
+      diagnostic.normalizedOverviewPresentCount === 0
+    ) {
+      return respondToDiagnostic('tvdb_no_overview', diagnostic);
+    }
+    return respondToDiagnostic('tvdb_overview_ok', diagnostic);
+  } catch (cause) {
+    if (!(cause instanceof TvdbOverviewDiagnosticError)) throw cause;
+
+    switch (cause.failure) {
+      case 'authentication':
+        return respondToDiagnostic('tvdb_authentication_failure', null, 502);
+      case 'network_or_rate_limit':
+        return respondToDiagnostic('tvdb_network_or_rate_limit_failure', null, 503);
+      case 'provider':
+        return respondToDiagnostic('tvdb_provider_failure', null, 502);
+    }
+  }
 }
 
 /**
@@ -359,9 +443,16 @@ Deno.serve(async (request: Request): Promise<Response> => {
     const userId = await resolveUserId(token);
     if (!userId) return respond('unauthenticated', null, 401);
 
-    const state = await readGroupState(token, body.groupId);
-    if (state === null) return respond('not_a_member', null);
-    if (state !== 'active') return respond('group_in_grace', null);
+    const access = await readGroupAccess(token, body.groupId);
+    if (access === null) return respond('not_a_member', null);
+    if (access.state !== 'active') return respond('group_in_grace', null);
+
+    if (body.kind === 'tvdb-overview') {
+      if (access.createdBy !== userId) {
+        return respondToDiagnostic('diagnostic_forbidden', null, 403);
+      }
+      return await runTvdbOverviewDiagnostic(request);
+    }
 
     // An explicit empty service list means no service is eligible, so no title
     // can be. Answered without calling the upstream at all.
