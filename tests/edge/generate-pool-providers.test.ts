@@ -20,12 +20,75 @@ type GenerateResponse = {
   poolId: string | null;
 };
 
+type TvdbOverviewDiagnosticResponse = {
+  status: string;
+  diagnostic: {
+    source: {
+      loginEndpoint: string;
+      collectionEndpoints: string[];
+      detailLookupPerformed: boolean;
+      productionDetailLookupPerformed: boolean;
+      detailEndpoints: string[];
+      rawOverviewField: string;
+    };
+    recordsInspected: number;
+    rawOverviewPresentCount: number;
+    normalizedOverviewPresentCount: number;
+    normalizationDroppedCount: number;
+    coverageByMediaType: Record<
+      'movie' | 'tv',
+      {
+        inspected: number;
+        rawOverviewPresentCount: number;
+        normalizedOverviewPresentCount: number;
+        coveragePercent: number;
+      }
+    >;
+    movieDetails: {
+      sampled: number;
+      rawOverviewPresentCount: number;
+      normalizedOverviewPresentCount: number;
+      normalizationDroppedCount: number;
+      requestFailureCount: number;
+      coveragePercent: number;
+      samples: {
+        title: string | null;
+        tvdbId: string;
+        listingOverviewPresent: boolean;
+        detailEndpointsTried: string[];
+        detailRequestSuccess: boolean;
+        detailEndpointUsed: string | null;
+        rawOverviewPath: string | null;
+        detailRawOverviewPresent: boolean;
+        detailRawOverviewLength: number;
+        normalizedDetailOverviewPresent: boolean;
+        normalizedDetailOverviewLength: number;
+        normalizedDetailOverviewPreview: string | null;
+        failure: string | null;
+      }[];
+    };
+    samples: {
+      title: string | null;
+      tvdbId: string;
+      mediaType: string;
+      rawOverviewFieldPresent: boolean;
+      rawOverviewPresent: boolean;
+      rawOverviewLength: number;
+      normalizedOverviewPresent: boolean;
+      normalizedOverviewLength: number;
+      normalizedOverviewPreview: string | null;
+    }[];
+  } | null;
+};
+
 type ProviderName = 'tmdb' | 'tvdb' | 'streaming-availability';
 
 type UpstreamState = {
   failing: boolean;
   tmdb: Record<'movie' | 'tv', unknown[]>;
   tvdb: Record<'movie' | 'tv', unknown[]>;
+  tvdbDetails: Record<string, { base?: unknown; extended?: unknown }>;
+  tvdbDetailFailures: Set<string>;
   streamingAvailability: Record<'movie' | 'tv', unknown[]>;
 };
 
@@ -59,6 +122,8 @@ function emptyUpstream(): UpstreamState {
     failing: false,
     tmdb: { movie: [], tv: [] },
     tvdb: { movie: [], tv: [] },
+    tvdbDetails: {},
+    tvdbDetailFailures: new Set(),
     streamingAvailability: { movie: [], tv: [] },
   };
 }
@@ -99,6 +164,24 @@ beforeAll(async () => {
     if (path === '/login') return send({ status: 'success', data: { token: 'tvdb-test-token' } });
     if (path === '/movies') return send({ data: upstream.tvdb.movie });
     if (path === '/series') return send({ data: upstream.tvdb.tv });
+    const movieDetail = path.match(/^\/movies\/([^/]+)(\/extended)?$/);
+    if (movieDetail) {
+      const id = decodeURIComponent(movieDetail[1]);
+      if (upstream.tvdbDetailFailures.has(path)) {
+        response.writeHead(503, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: 'detail unavailable' }));
+        return;
+      }
+      const listing = upstream.tvdb.movie.find(
+        (row) => typeof row === 'object' && row !== null && String((row as { id?: unknown }).id) === id
+      );
+      const configured = upstream.tvdbDetails[id];
+      return send({
+        data: movieDetail[2]
+          ? configured?.extended ?? { ...(listing as object), translations: { overviewTranslations: [] } }
+          : configured?.base ?? listing ?? { id: Number(id) },
+      });
+    }
 
     if (path === '/discover/movie') return send({ results: upstream.tmdb.movie });
     if (path === '/discover/tv') return send({ results: upstream.tmdb.tv });
@@ -205,6 +288,25 @@ async function invokeGeneratePool(
   return (await response.json()) as GenerateResponse;
 }
 
+async function invokeTvdbOverviewDiagnostic(
+  user: TestUser,
+  groupId: string
+): Promise<TvdbOverviewDiagnosticResponse> {
+  const response = await fetch(`${SUPABASE_URL}/functions/v1/generate-pool`, {
+    method: 'POST',
+    headers: {
+      apikey: SUPABASE_ANON_KEY!,
+      authorization: `Bearer ${user.token}`,
+      'content-type': 'application/json',
+      'x-popcornpact-test-media-base-url': mockServerUrl,
+      'x-popcornpact-test-media-provider': 'tvdb',
+    },
+    body: JSON.stringify({ groupId, diagnostic: 'tvdb-overview' }),
+  });
+
+  return (await response.json()) as TvdbOverviewDiagnosticResponse;
+}
+
 /** Every pool title as the canonical record it resolved to. */
 async function canonicalTitles(poolId: string): Promise<CanonicalTitle[]> {
   const titles = await admin.from('pool_titles').select('media_id').eq('pool_id', poolId);
@@ -258,6 +360,327 @@ async function poolCountForGroup(groupId: string): Promise<number> {
 }
 
 describe('generate-pool is independent of any one media provider', () => {
+  test('production TVDB generation enriches only incomplete movies and leaves series on their listing path', async () => {
+    const owner = await createUser('TVDB Enrichment Owner');
+    const groupId = await createGroup(owner);
+    upstream.tvdb.movie = [
+      { id: 6101, name: 'Needs Movie Detail' },
+      { id: 6102, name: 'Complete Movie', overview: 'Existing movie overview.' },
+    ];
+    upstream.tvdb.tv = [
+      { id: 6201, name: 'Complete Series', overview: 'Existing series overview.' },
+    ];
+    upstream.tvdbDetails['6101'] = {
+      extended: {
+        id: 6101,
+        name: 'Needs Movie Detail',
+        translations: {
+          overviewTranslations: [
+            { language: 'fra', overview: 'Apercu du film.' },
+            { language: 'eng', overview: 'Enriched canonical movie overview.' },
+          ],
+        },
+      },
+    };
+
+    const result = await invokeGeneratePool(owner, { groupId }, 'tvdb');
+
+    expect(result.status).toBe('created');
+    expect(await canonicalTitles(result.poolId!)).toEqual([
+      {
+        media_type: 'movie',
+        title: 'Complete Movie',
+        release_year: null,
+        overview: 'Existing movie overview.',
+        poster_url: null,
+        external: { tvdb: '6102' },
+      },
+      {
+        media_type: 'tv',
+        title: 'Complete Series',
+        release_year: null,
+        overview: 'Existing series overview.',
+        poster_url: null,
+        external: { tvdb: '6201' },
+      },
+      {
+        media_type: 'movie',
+        title: 'Needs Movie Detail',
+        release_year: null,
+        overview: 'Enriched canonical movie overview.',
+        poster_url: null,
+        external: { tvdb: '6101' },
+      },
+    ]);
+    expect(requestedPaths).toContain(
+      '/movies/6101/extended?meta=translations&short=true'
+    );
+    expect(requestedPaths).not.toContain(
+      '/movies/6102/extended?meta=translations&short=true'
+    );
+    expect(requestedPaths.some((path) => path.startsWith('/series/6201'))).toBe(false);
+  });
+
+  test('production TVDB generation keeps selected movies when optional detail enrichment fails or is empty', async () => {
+    const owner = await createUser('TVDB Detail Failure Owner');
+    const groupId = await createGroup(owner);
+    upstream.tvdb.movie = [
+      { id: 6301, name: 'Detail Request Fails' },
+      { id: 6302, name: 'Detail Has No Overview' },
+    ];
+    upstream.tvdb.tv = [];
+    upstream.tvdbDetailFailures.add('/movies/6301/extended');
+    upstream.tvdbDetails['6302'] = {
+      extended: {
+        id: 6302,
+        name: 'Detail Has No Overview',
+        translations: {
+          overviewTranslations: [
+            { language: 'eng', overview: '   ' },
+            { language: 'spa', overview: '' },
+          ],
+        },
+      },
+    };
+
+    const result = await invokeGeneratePool(owner, { groupId }, 'tvdb');
+
+    expect(result.status).toBe('created');
+    expect(await canonicalTitles(result.poolId!)).toEqual([
+      expect.objectContaining({ title: 'Detail Has No Overview', overview: null }),
+      expect.objectContaining({ title: 'Detail Request Fails', overview: null }),
+    ]);
+    expect(requestedPaths).toEqual(
+      expect.arrayContaining([
+        '/movies/6301/extended?meta=translations&short=true',
+        '/movies/6302/extended?meta=translations&short=true',
+      ])
+    );
+  });
+
+  test('TMDB and Streaming Availability keep their own overview paths without TVDB detail calls', async () => {
+    const owner = await createUser('Provider Isolation Owner');
+    const groupId = await createGroup(owner);
+    upstream.tmdb.movie = [
+      { id: 6401, title: 'TMDB Isolated', overview: 'TMDB response overview.' },
+    ];
+
+    const tmdbResult = await invokeGeneratePool(owner, { groupId }, 'tmdb');
+
+    expect(tmdbResult.status).toBe('created');
+    expect(await canonicalTitles(tmdbResult.poolId!)).toEqual([
+      expect.objectContaining({ title: 'TMDB Isolated', overview: 'TMDB response overview.' }),
+    ]);
+    expect(requestedPaths.some((path) => /^\/movies\/\d+/.test(path))).toBe(false);
+    expect(requestedPaths.every((path) => path.startsWith('/discover/'))).toBe(true);
+
+    requestedPaths = [];
+    upstream.streamingAvailability.movie = [
+      {
+        id: 'sa-6501',
+        title: 'Streaming Isolated',
+        showType: 'movie',
+        overview: 'Streaming Availability response overview.',
+      },
+    ];
+
+    const streamingResult = await invokeGeneratePool(
+      owner,
+      { groupId },
+      'streaming-availability'
+    );
+
+    expect(streamingResult.status).toBe('created');
+    expect(await canonicalTitles(streamingResult.poolId!)).toEqual([
+      expect.objectContaining({
+        title: 'Streaming Isolated',
+        overview: 'Streaming Availability response overview.',
+      }),
+    ]);
+    expect(requestedPaths.some((path) => /^\/movies\/\d+/.test(path))).toBe(false);
+    expect(requestedPaths.every((path) => path.startsWith('/shows/search/filters'))).toBe(true);
+  });
+
+  test('owner-only TVDB smoke diagnostics preserve overview text without creating a pool', async () => {
+    const owner = await createUser('Diagnostic Owner');
+    const groupId = await createGroup(owner);
+    upstream.tvdb.movie = [
+      {
+        id: 81,
+        name: 'Observed Film',
+        overview: 'TVDB supplied an overview to the production collection path.',
+      },
+      { id: 82, name: 'Film Without Overview' },
+    ];
+    upstream.tvdb.tv = [{ id: 83, name: 'Observed Series', overview: 'A series overview.' }];
+    upstream.tvdbDetails['82'] = {
+      extended: {
+        id: 82,
+        name: 'Film Without Overview',
+        translations: {
+          overviewTranslations: [
+            {
+              language: 'eng',
+              overview: 'The extended movie detail supplied this overview.',
+            },
+          ],
+        },
+      },
+    };
+
+    const before = await poolCountForGroup(groupId);
+    const result = await invokeTvdbOverviewDiagnostic(owner, groupId);
+
+    expect(result.status).toBe('tvdb_overview_ok');
+    expect(result.diagnostic).toMatchObject({
+      source: {
+        loginEndpoint: '/login',
+        collectionEndpoints: ['/movies', '/series'],
+        detailLookupPerformed: true,
+        productionDetailLookupPerformed: false,
+        detailEndpoints: [
+          '/movies/{id}',
+          '/movies/{id}/extended?meta=translations&short=true',
+        ],
+        rawOverviewField: 'overview',
+      },
+      recordsInspected: 3,
+      rawOverviewPresentCount: 2,
+      normalizedOverviewPresentCount: 2,
+      normalizationDroppedCount: 0,
+      coverageByMediaType: {
+        movie: {
+          inspected: 2,
+          rawOverviewPresentCount: 1,
+          normalizedOverviewPresentCount: 1,
+          coveragePercent: 50,
+        },
+        tv: {
+          inspected: 1,
+          rawOverviewPresentCount: 1,
+          normalizedOverviewPresentCount: 1,
+          coveragePercent: 100,
+        },
+      },
+      movieDetails: {
+        sampled: 1,
+        rawOverviewPresentCount: 1,
+        normalizedOverviewPresentCount: 1,
+        normalizationDroppedCount: 0,
+        requestFailureCount: 0,
+        coveragePercent: 100,
+      },
+    });
+    expect(result.diagnostic?.movieDetails.samples).toEqual([
+      expect.objectContaining({
+        title: 'Film Without Overview',
+        tvdbId: '82',
+        listingOverviewPresent: false,
+        detailEndpointsTried: [
+          '/movies/{id}',
+          '/movies/{id}/extended?meta=translations&short=true',
+        ],
+        detailRequestSuccess: true,
+        detailEndpointUsed: '/movies/{id}/extended?meta=translations&short=true',
+        rawOverviewPath: 'data.translations.overviewTranslations[0].overview',
+        detailRawOverviewPresent: true,
+        normalizedDetailOverviewPresent: true,
+        failure: null,
+      }),
+    ]);
+    expect(requestedPaths).toEqual(
+      expect.arrayContaining([
+        '/movies/82',
+        '/movies/82/extended?meta=translations&short=true',
+      ])
+    );
+    expect(result.diagnostic?.samples).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: 'Observed Film',
+          tvdbId: '81',
+          mediaType: 'movie',
+          rawOverviewPresent: true,
+          normalizedOverviewPresent: true,
+        }),
+        expect.objectContaining({
+          title: 'Film Without Overview',
+          rawOverviewFieldPresent: false,
+          rawOverviewPresent: false,
+          normalizedOverviewPresent: false,
+        }),
+      ])
+    );
+    expect(await poolCountForGroup(groupId)).toBe(before);
+  });
+
+  test('TVDB smoke diagnostics identify provider-data absence separately from normalization', async () => {
+    const owner = await createUser('No Overview Owner');
+    const groupId = await createGroup(owner);
+    upstream.tvdb.movie = [{ id: 91, name: 'No Movie Overview' }];
+    upstream.tvdb.tv = [{ id: 92, name: 'No Series Overview', overview: '   ' }];
+
+    const result = await invokeTvdbOverviewDiagnostic(owner, groupId);
+
+    expect(result.status).toBe('tvdb_no_overview');
+    expect(result.diagnostic).toMatchObject({
+      recordsInspected: 2,
+      rawOverviewPresentCount: 0,
+      normalizedOverviewPresentCount: 0,
+      normalizationDroppedCount: 0,
+      coverageByMediaType: {
+        movie: {
+          inspected: 1,
+          rawOverviewPresentCount: 0,
+          normalizedOverviewPresentCount: 0,
+          coveragePercent: 0,
+        },
+        tv: {
+          inspected: 1,
+          rawOverviewPresentCount: 0,
+          normalizedOverviewPresentCount: 0,
+          coveragePercent: 0,
+        },
+      },
+      movieDetails: {
+        sampled: 1,
+        rawOverviewPresentCount: 0,
+        normalizedOverviewPresentCount: 0,
+        normalizationDroppedCount: 0,
+        requestFailureCount: 0,
+        coveragePercent: 0,
+      },
+    });
+  });
+
+  test('TVDB smoke diagnostics classify a real provider-path failure', async () => {
+    const owner = await createUser('Provider Failure Owner');
+    const groupId = await createGroup(owner);
+    upstream.failing = true;
+
+    const result = await invokeTvdbOverviewDiagnostic(owner, groupId);
+
+    expect(result).toEqual({ status: 'tvdb_provider_failure', diagnostic: null });
+  });
+
+  test('a group member who is not the owner cannot invoke TVDB smoke diagnostics', async () => {
+    const [owner, member] = await Promise.all([
+      createUser('Diagnostic Group Owner'),
+      createUser('Diagnostic Group Member'),
+    ]);
+    const groupId = await createGroup(owner);
+    const membership = await admin.from('group_members').insert({
+      group_id: groupId,
+      user_id: member.id,
+    });
+    if (membership.error) throw membership.error;
+
+    const result = await invokeTvdbOverviewDiagnostic(member, groupId);
+
+    expect(result).toEqual({ status: 'diagnostic_forbidden', diagnostic: null });
+    expect(requestedPaths).toEqual([]);
+  });
+
   test('a TMDB-shaped upstream stores overview as canonical title metadata', async () => {
     const owner = await createUser('Portability Owner');
     const groupId = await createGroup(owner);
