@@ -156,9 +156,46 @@ export function createTvdbProvider(config: TvdbConfig): MediaProvider {
         if (record) records.push(record);
       }
 
+      await enrichMovieOverviews(config, token, records);
+
       return records;
     },
   };
+}
+
+/**
+ * Fills in a missing movie overview from the extended-detail endpoint.
+ *
+ * Scoped to the records the adapter already admitted (bounded by
+ * `request.limit`, itself equal to the pool's own cap), not the wider set of
+ * rows discovery paged through -- so this cannot balloon into one detail call
+ * per row TVDB returned. TV records and movies that already carry a listing
+ * overview are skipped: this is optional enrichment for the one gap production
+ * TVDB movie listings actually have, not a general detail lookup.
+ */
+async function enrichMovieOverviews(
+  config: TvdbConfig,
+  token: string,
+  records: MediaRecord[]
+): Promise<void> {
+  const candidates = records.filter(
+    (record) => record.mediaType === 'movie' && record.overview === null
+  );
+  if (candidates.length === 0) return;
+
+  await mapWithConcurrency(candidates, MOVIE_DETAIL_CONCURRENCY, async (record) => {
+    let extendedPayload: unknown;
+    try {
+      extendedPayload = await fetchMovieDetail(config, token, record.externalIds.tvdb, true);
+    } catch {
+      // Enrichment is optional metadata: a failed/timed-out detail request
+      // leaves the base record exactly as discovery produced it.
+      return;
+    }
+
+    const raw = rawDetailOverview(null, extendedPayload);
+    if (raw) record.overview = raw.value;
+  });
 }
 
 /**
